@@ -1,5 +1,6 @@
 package expo.modules.roomplan
 
+import android.content.Context
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -9,13 +10,13 @@ class ExpoRoomPlanViewModule : Module() {
     Name("ExpoRoomPlanView")
 
     // Register a View factory. The View itself will throw on Android.
-    View(::RoomPlanView) {
+    View<RoomPlanView>({ context: Context -> RoomPlanView(context) }) {
       // Mirror props to satisfy the JS/TS surface. They are no-ops here.
-      Prop("scanName") { _: RoomPlanView, _: String? -> }
-      Prop("exportType") { _: RoomPlanView, _: String? -> }
-      Prop("sendFileLoc") { _: RoomPlanView, _: Boolean? -> }
-      Prop("running") { _: RoomPlanView, _: Boolean? -> }
-      Prop("exportTrigger") { _: RoomPlanView, _: Double? -> }
+      Prop<RoomPlanView, String?>("scanName") { _: RoomPlanView, _: String? -> }
+      Prop<RoomPlanView, String?>("exportType") { _: RoomPlanView, _: String? -> }
+      Prop<RoomPlanView, Boolean?>("sendFileLoc") { _: RoomPlanView, _: Boolean? -> }
+      Prop<RoomPlanView, Boolean?>("running") { _: RoomPlanView, _: Boolean? -> }
+      Prop<RoomPlanView, Double?>("exportTrigger") { _: RoomPlanView, _: Double? -> }
 
       Events("onStatus", "onExported")
     }

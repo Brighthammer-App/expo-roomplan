@@ -46,7 +46,15 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setupRoomCaptureView() {
-        roomCaptureView = RoomCaptureView(frame: view.bounds)
+        // Shift the capture view up by 70pt so the 3D model sits mid-screen
+        // rather than being pushed down by the button strip at the bottom.
+        let offset: CGFloat = -70
+        roomCaptureView = RoomCaptureView(frame: CGRect(
+            x: view.bounds.origin.x,
+            y: view.bounds.origin.y + offset,
+            width: view.bounds.width,
+            height: view.bounds.height
+        ))
         roomCaptureView?.captureSession.delegate = self
         view.insertSubview(roomCaptureView, at: 0)
 
@@ -55,67 +63,85 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setupButtons() {
-        // initialize and set up the finish button
+        // Record/stop button — large circular red button at the bottom centre
         finishButton = UIButton()
         finishButton.translatesAutoresizingMaskIntoConstraints = false
-        finishButton.setTitleColor(.white, for: .normal)
-        finishButton.titleLabel?.textAlignment = .center
-        finishButton.titleLabel?.numberOfLines = 0
-        finishButton.titleLabel?.font = UIFont.systemFont(
-            ofSize: 16,
-            weight: .bold
-        )
-        finishButton.setTitle("Finish", for: .normal)
+        finishButton.backgroundColor = UIColor.systemRed
+        finishButton.layer.masksToBounds = true
+        finishButton.layer.cornerRadius = 36  // half of 72pt → circle
 
-        // Finish should either stop scanning (if running) or confirm exit (if post-scan)
-        finishButton.addTarget(
-            self,
-            action: #selector(finishTapped),
-            for: .touchUpInside
-        )
+        // Stop-square icon inside the circle
+        let stopConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)
+        let stopImage = UIImage(systemName: "stop.fill", withConfiguration: stopConfig)
+        finishButton.setImage(stopImage, for: .normal)
+        finishButton.tintColor = .white
 
-        // add the label on top of roomCaptureView
+        // Outer ring (like a camera shutter ring)
+        let ringLayer = CAShapeLayer()
+        ringLayer.strokeColor = UIColor.white.cgColor
+        ringLayer.fillColor = UIColor.clear.cgColor
+        ringLayer.lineWidth = 3
+        ringLayer.name = "recordRing"
+        finishButton.layer.addSublayer(ringLayer)
+
+        finishButton.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
+
+        // Frosted backdrop so the button reads clearly over the AR view
+        let backdrop = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.tag = 886
+        backdrop.isUserInteractionEnabled = false
+        view.addSubview(backdrop)
+
         view.addSubview(finishButton)
 
-        // initialize and set up the cancel button
+        // Cancel button — top left, text only
         cancelButton = UIButton()
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.setTitleColor(.white, for: .normal)
-        cancelButton.titleLabel?.textAlignment = .center
-        cancelButton.titleLabel?.numberOfLines = 0
-        cancelButton.titleLabel?.font = UIFont.systemFont(
-            ofSize: 16,
-            weight: .bold
-        )
+        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         cancelButton.setTitle("Cancel", for: .normal)
-        // round corners
+        cancelButton.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         cancelButton.layer.masksToBounds = true
-        cancelButton.layer.cornerRadius = 5
+        cancelButton.layer.cornerRadius = 15
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
+        cancelButton.configuration = config
 
-        // add the action for button press
-        cancelButton.addTarget(
-            self,
-            action: #selector(cancelSession),
-            for: .touchUpInside
-        )
-
-        // add the label on top of roomCaptureView
+        cancelButton.addTarget(self, action: #selector(cancelSession), for: .touchUpInside)
         view.addSubview(cancelButton)
     }
 
-    private func setupConstraints() {
-        NSLayoutConstraint.activate([
-            finishButton.topAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.topAnchor,
-                constant: 10
-            ),
-            finishButton.trailingAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.trailingAnchor,
-                constant: -20
-            ),
-            finishButton.widthAnchor.constraint(equalToConstant: 80),
-            finishButton.heightAnchor.constraint(equalToConstant: 30),
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Keep the ring layer sized to the button bounds
+        if let ring = finishButton.layer.sublayers?.first(where: { $0.name == "recordRing" }) as? CAShapeLayer {
+            let inset: CGFloat = 3
+            let rect = finishButton.bounds.insetBy(dx: inset, dy: inset)
+            ring.path = UIBezierPath(ovalIn: rect).cgPath
+            ring.frame = finishButton.bounds
+        }
+    }
 
+    private func setupConstraints() {
+        let backdrop = view.viewWithTag(886)!
+        NSLayoutConstraint.activate([
+            // Frosted backdrop strip at the bottom
+            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backdrop.heightAnchor.constraint(equalToConstant: 140),
+
+            // Record button — bottom centre, above safe area
+            finishButton.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor,
+                constant: -24
+            ),
+            finishButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            finishButton.widthAnchor.constraint(equalToConstant: 72),
+            finishButton.heightAnchor.constraint(equalToConstant: 72),
+
+            // Cancel button — top left
             cancelButton.topAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.topAnchor,
                 constant: 10
@@ -124,7 +150,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 equalTo: view.safeAreaLayoutGuide.leadingAnchor,
                 constant: 20
             ),
-            cancelButton.widthAnchor.constraint(equalToConstant: 80),
             cancelButton.heightAnchor.constraint(equalToConstant: 30),
         ])
     }
@@ -219,7 +244,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        startSession()
+        setupReadyUI()
     }
 
     override func viewWillDisappear(_ flag: Bool) {
@@ -390,67 +415,133 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
     }
 
+    // Shows instructions overlay with a large red record button before scanning begins
+    private func setupReadyUI() {
+        let overlay = UIView()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        overlay.tag = 888
+        overlay.isUserInteractionEnabled = false
+        // Insert below finishButton so the button stays tappable
+        view.insertSubview(overlay, belowSubview: finishButton)
+
+        let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.text = "Tap the button below to start scanning"
+        label.textColor = .white
+        label.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        overlay.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: view.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            label.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -140),
+            label.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 32),
+            label.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -32),
+        ])
+    }
+
     public func startSession() {
         print("[RoomPlan] starting session")
-        roomCaptureView?.captureSession.run(
-            configuration: roomCaptureSessionConfig
-        )
+        // Dismiss the ready overlay if present
+        if let overlay = view.viewWithTag(888) {
+            UIView.animate(withDuration: 0.25, animations: {
+                overlay.alpha = 0
+            }, completion: { _ in
+                overlay.removeFromSuperview()
+            })
+        }
+        roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
+        showScanningHint()
+    }
+
+    private func showScanningHint() {
+        // Remove any existing hint first
+        view.viewWithTag(887)?.removeFromSuperview()
+
+        let hint = UILabel()
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        hint.tag = 887
+        hint.text = "Scan this room. For best results, scan one room at a time — stop and start again for each room."
+        hint.textColor = .white
+        hint.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+        hint.textAlignment = .center
+        hint.numberOfLines = 0
+        hint.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        hint.layer.cornerRadius = 10
+        hint.layer.masksToBounds = true
+        hint.isUserInteractionEnabled = false
+        view.insertSubview(hint, belowSubview: finishButton)
+
+        NSLayoutConstraint.activate([
+            hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            hint.bottomAnchor.constraint(equalTo: finishButton.topAnchor, constant: -20),
+            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+            hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+        ])
     }
 
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
         exportButton.removeFromSuperview()
         anotherScanButton.removeFromSuperview()
-        roomCaptureView?.captureSession.run(
-            configuration: roomCaptureSessionConfig
-        )
+        roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
+        // Restore the record button
+        setFinishButtonToRecording()
+        finishButton.isHidden = false
+        showScanningHint()
         UIView.transition(
             with: cancelButton,
             duration: 0.5,
             options: .transitionCrossDissolve,
             animations: {
-                self.cancelButton.backgroundColor = UIColor.black
-                    .withAlphaComponent(0)  // make button background invisible again
+                self.cancelButton.backgroundColor = UIColor.black.withAlphaComponent(0.4)
             },
             completion: nil
         )
-        // finishButton remains bound to finishTapped
-        finishButton.isEnabled = true
     }
 
     @objc
     public func stopSession() {
         roomCaptureView?.captureSession.stop(pauseARSession: false)
         isSessionRunning = false
+        // Remove scanning hint
+        view.viewWithTag(887)?.removeFromSuperview()
+        // Hide the record button — post-scan UI has its own actions
+        finishButton.isHidden = true
         setupPostScanUI()
     }
 
     @objc
     private func finishTapped() {
-        if isSessionRunning {
-            // Current behavior during scanning: stop the session and show post-scan UI
+        if view.viewWithTag(888) != nil {
+            // Not yet started — tap starts the scan
+            startSession()
+        } else if isSessionRunning {
+            // Currently scanning — tap stops and shows post-scan UI
             stopSession()
         } else {
-            // Post-scan (or no active session): confirm finishing and exit the view
-            let alertController = UIAlertController(
-                title: "Finish Scanning?",
-                message:
-                    "You're about to close the scanner. You can export results first or finish now.",
-                preferredStyle: .alert
-            )
-
-            let confirmAction = UIAlertAction(title: "Finish", style: .destructive) { _ in
-                self.sendScanResultAndDismiss(status: .OK)
-            }
-            alertController.addAction(confirmAction)
-
-            let cancelAction = UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
-            alertController.addAction(cancelAction)
-
-            self.present(alertController, animated: true, completion: nil)
+            // Post-scan and button somehow visible — shouldn't happen, but safe fallback
+            sendScanResultAndDismiss(status: .OK)
         }
+    }
+
+    private func setFinishButtonToRecording() {
+        UIView.animate(withDuration: 0.2) {
+            self.finishButton.backgroundColor = UIColor.systemRed
+        }
+        let stopConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)
+        let stopImage = UIImage(systemName: "stop.fill", withConfiguration: stopConfig)
+        finishButton.setImage(stopImage, for: .normal)
+        finishButton.isEnabled = true
     }
 
     @objc
