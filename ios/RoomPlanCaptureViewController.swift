@@ -70,10 +70,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         finishButton.layer.masksToBounds = true
         finishButton.layer.cornerRadius = 36  // half of 72pt → circle
 
-        // Stop-square icon inside the circle
-        let stopConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)
-        let stopImage = UIImage(systemName: "stop.fill", withConfiguration: stopConfig)
-        finishButton.setImage(stopImage, for: .normal)
+        // Record circle icon — shown before scanning starts
+        let recordConfig = UIImage.SymbolConfiguration(pointSize: 32, weight: .bold)
+        let recordImage = UIImage(systemName: "circle.fill", withConfiguration: recordConfig)
+        finishButton.setImage(recordImage, for: .normal)
         finishButton.tintColor = .white
 
         // Outer ring (like a camera shutter ring)
@@ -166,7 +166,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             ofSize: 16,
             weight: .bold
         )
-        exportButton.setTitle("Export Results", for: .normal)  // text
+        exportButton.setTitle("Done", for: .normal)
         // round corners
         exportButton.layer.masksToBounds = true
         exportButton.layer.cornerRadius = 15
@@ -459,6 +459,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
+        setFinishButtonToRecording()
         showScanningHint()
     }
 
@@ -541,6 +542,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         let stopConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)
         let stopImage = UIImage(systemName: "stop.fill", withConfiguration: stopConfig)
         finishButton.setImage(stopImage, for: .normal)
+        finishButton.tintColor = .white
         finishButton.isEnabled = true
     }
 
