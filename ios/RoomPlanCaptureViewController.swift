@@ -45,21 +45,39 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.addSubview(activityIndicator)
     }
 
+    // Backdrop is sized by Auto Layout to wrap its content; capture view fills above it.
+    private var backdropView: UIVisualEffectView!
+
     private func setupRoomCaptureView() {
-        // Shift the capture view up by 70pt so the 3D model sits mid-screen
-        // rather than being pushed down by the button strip at the bottom.
-        let offset: CGFloat = -70
-        roomCaptureView = RoomCaptureView(frame: CGRect(
-            x: view.bounds.origin.x,
-            y: view.bounds.origin.y + offset,
-            width: view.bounds.width,
-            height: view.bounds.height
-        ))
+        // Temporary full-size frame — trimmed to sit above the backdrop in viewDidLayoutSubviews.
+        roomCaptureView = RoomCaptureView(frame: view.bounds)
         roomCaptureView?.captureSession.delegate = self
         view.insertSubview(roomCaptureView, at: 0)
 
         setupButtons()
         setupConstraints()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+
+        // Keep the ring layer sized to the button bounds
+        if let ring = finishButton.layer.sublayers?.first(where: { $0.name == "recordRing" }) as? CAShapeLayer {
+            let inset: CGFloat = 3
+            let rect = finishButton.bounds.insetBy(dx: inset, dy: inset)
+            ring.path = UIBezierPath(ovalIn: rect).cgPath
+            ring.frame = finishButton.bounds
+        }
+
+        // Squash capture view to end exactly where the frosted backdrop begins
+        if let backdrop = backdropView {
+            let backdropTop = backdrop.frame.minY
+            roomCaptureView.frame = CGRect(
+                x: 0, y: 0,
+                width: view.bounds.width,
+                height: backdropTop
+            )
+        }
     }
 
     private func setupButtons() {
@@ -86,12 +104,11 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         finishButton.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
 
-        // Frosted backdrop so the button reads clearly over the AR view
-        let backdrop = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        backdrop.tag = 886
-        backdrop.isUserInteractionEnabled = false
-        view.addSubview(backdrop)
+        // Frosted backdrop — height driven by content via Auto Layout
+        backdropView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        backdropView.translatesAutoresizingMaskIntoConstraints = false
+        backdropView.isUserInteractionEnabled = false
+        view.addSubview(backdropView)
 
         view.addSubview(finishButton)
 
@@ -112,30 +129,19 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.addSubview(cancelButton)
     }
 
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // Keep the ring layer sized to the button bounds
-        if let ring = finishButton.layer.sublayers?.first(where: { $0.name == "recordRing" }) as? CAShapeLayer {
-            let inset: CGFloat = 3
-            let rect = finishButton.bounds.insetBy(dx: inset, dy: inset)
-            ring.path = UIBezierPath(ovalIn: rect).cgPath
-            ring.frame = finishButton.bounds
-        }
-    }
-
     private func setupConstraints() {
-        let backdrop = view.viewWithTag(886)!
         NSLayoutConstraint.activate([
-            // Frosted backdrop strip at the bottom
-            backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            backdrop.heightAnchor.constraint(equalToConstant: 140),
+            // Frosted backdrop — spans full width, anchored to bottom, top driven by button
+            backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backdropView.topAnchor.constraint(
+                equalTo: finishButton.topAnchor, constant: -20
+            ),
 
-            // Record button — bottom centre, above safe area
+            // Record button — centred, 20pt above safe area bottom
             finishButton.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor,
-                constant: -24
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
             ),
             finishButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             finishButton.widthAnchor.constraint(equalToConstant: 72),
@@ -143,12 +149,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
             // Cancel button — top left
             cancelButton.topAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.topAnchor,
-                constant: 10
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10
             ),
             cancelButton.leadingAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.leadingAnchor,
-                constant: 20
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20
             ),
             cancelButton.heightAnchor.constraint(equalToConstant: 30),
         ])
@@ -162,10 +166,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         exportButton.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         exportButton.titleLabel?.textAlignment = .center
         exportButton.titleLabel?.numberOfLines = 0
-        exportButton.titleLabel?.font = UIFont.systemFont(
-            ofSize: 16,
-            weight: .bold
-        )
+        exportButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
         exportButton.setTitle("Done", for: .normal)
         // round corners
         exportButton.layer.masksToBounds = true
@@ -186,11 +187,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         anotherScanButton.titleLabel?.textAlignment = .center
         anotherScanButton.titleLabel?.numberOfLines = 0
-        anotherScanButton.titleLabel?.font = UIFont.systemFont(
-            ofSize: 16,
-            weight: .bold
-        )
-        anotherScanButton.setTitle("Add Another Room to Scan", for: .normal)  // text
+        anotherScanButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+        anotherScanButton.setTitle("Add Room", for: .normal)
         // round corners
         anotherScanButton.layer.masksToBounds = true
         anotherScanButton.layer.cornerRadius = 15
@@ -202,9 +200,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
 
         let buttonStack = UIStackView(arrangedSubviews: [
-            exportButton, anotherScanButton,
+            anotherScanButton, exportButton,
         ])
-        buttonStack.axis = .vertical
+        buttonStack.axis = .horizontal
         buttonStack.spacing = 16
         buttonStack.distribution = .fillEqually
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
@@ -224,20 +222,17 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // Keep Finish active; it will now confirm exit when no session is running.
 
         NSLayoutConstraint.activate([
-            exportButton.heightAnchor.constraint(equalToConstant: 50),
-            anotherScanButton.heightAnchor.constraint(equalToConstant: 50),
+            exportButton.heightAnchor.constraint(equalToConstant: 60),
+            anotherScanButton.heightAnchor.constraint(equalToConstant: 60),
 
-            buttonStack.leadingAnchor.constraint(
-                equalTo: view.leadingAnchor,
-                constant: 20
-            ),
-            buttonStack.trailingAnchor.constraint(
-                equalTo: view.trailingAnchor,
-                constant: -20
-            ),
+            buttonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            buttonStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             buttonStack.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor,
-                constant: -40
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
+            ),
+            // Pin stack top to backdrop top + padding — backdrop grows to contain it
+            buttonStack.topAnchor.constraint(
+                equalTo: backdropView.topAnchor, constant: 20
             ),
         ])
     }
