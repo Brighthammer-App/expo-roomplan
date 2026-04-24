@@ -31,6 +31,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBOutlet var finishButton: UIButton!
     @IBOutlet var anotherScanButton: UIButton!
     @IBOutlet var exportButton: UIButton!
+    private var postScanButtonStack: UIStackView?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -206,6 +207,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         buttonStack.spacing = 16
         buttonStack.distribution = .fillEqually
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        postScanButtonStack = buttonStack
         view.addSubview(buttonStack)
 
         // alter text on cancel buttons
@@ -486,8 +488,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
-        exportButton.removeFromSuperview()
-        anotherScanButton.removeFromSuperview()
+        postScanButtonStack?.removeFromSuperview()
+        postScanButtonStack = nil
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
         // Restore the record button
