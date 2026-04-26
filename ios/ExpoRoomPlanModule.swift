@@ -1,5 +1,6 @@
 import ExpoModulesCore
 import UIKit
+import RoomPlan
 
 @available(iOS 17.0, *)
 public class ExpoRoomPlanModule: Module {
@@ -9,6 +10,10 @@ public class ExpoRoomPlanModule: Module {
         Name("ExpoRoomPlan")
 
         Events("onDismissEvent")
+
+        Constants([
+            "isSupported": RoomCaptureSession.isSupported
+        ])
 
         AsyncFunction("startCapture") {
             (scanName: String, exportType: String, sendFileLoc: Bool) in

@@ -17,9 +17,9 @@ export interface UseRoomPlanParams {
 }
 
 export interface ExpoRoomPlanModuleType {
+  isSupported: boolean;
   startCapture(scanName: string, exportType: ExportType, sendFileLoc: boolean): Promise<void>;
   stopCapture(): Promise<void>;
-  // test
   addListener?(eventName: string, listener: (event: any) => void): { remove: () => void };
   removeListeners?(count: number): void;
 }
