@@ -11,9 +11,9 @@ public class ExpoRoomPlanModule: Module {
 
         Events("onDismissEvent")
 
-        Constants([
-            "isSupported": RoomCaptureSession.isSupported
-        ])
+        Constant("isSupported") {
+            RoomCaptureSession.isSupported
+        }
 
         AsyncFunction("startCapture") {
             (scanName: String, exportType: String, sendFileLoc: Bool) in
