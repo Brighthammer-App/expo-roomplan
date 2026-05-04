@@ -501,7 +501,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
         exportPendingAfterBuild = false
-        capturedRoomArray = []
         postScanButtonStack?.removeFromSuperview()
         postScanButtonStack = nil
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
