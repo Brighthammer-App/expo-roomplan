@@ -25,6 +25,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     var sendFileLoc: Bool?
     var capturedRoomArray: [CapturedRoom] = []
 
+    // Set to true when the user taps Done before didEndWith has finished building the room.
+    // didEndWith will call exportResults() itself once the room is ready.
+    private var exportPendingAfterBuild: Bool = false
+
     // UI elements
     private let activityIndicator = UIActivityIndicatorView(style: .large)
     @IBOutlet var cancelButton: UIButton!
@@ -270,8 +274,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             self.exportButton.backgroundColor = UIColor.white
         }
 
-        roomCaptureView?.captureSession.stop()
-
         // create a white overlay view that covers the entire screen
         let overlayView = UIView(frame: self.view.bounds)
         overlayView.backgroundColor = UIColor.white
@@ -281,8 +283,18 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // add the overlay above the roomCaptureView but below other UI elements
         self.view.insertSubview(overlayView, aboveSubview: roomCaptureView!)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.exportResults()
+        // If the session is still running, stopping it will fire didEndWith which builds the
+        // room asynchronously. Mark export as pending so didEndWith triggers exportResults()
+        // once the room is ready, instead of racing with the 0.5s delay below.
+        if isSessionRunning {
+            exportPendingAfterBuild = true
+            roomCaptureView?.captureSession.stop()
+        } else {
+            // Session already stopped (user tapped stop first, then Done) — room is built,
+            // safe to export after the brief overlay animation.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.exportResults()
+            }
         }
     }
 
@@ -488,6 +500,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
+        exportPendingAfterBuild = false
+        capturedRoomArray = []
         postScanButtonStack?.removeFromSuperview()
         postScanButtonStack = nil
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
@@ -603,6 +617,14 @@ extension RoomPlanCaptureViewController {
                 self.capturedRoomArray.append(capturedRoom)
             } else {
                 print("[RoomPlan] Failed to build captured room.")
+            }
+            // If Done was tapped while the session was still running, export now that the
+            // room is built rather than relying on the fixed 0.5s delay in superExportResults.
+            if self.exportPendingAfterBuild {
+                self.exportPendingAfterBuild = false
+                DispatchQueue.main.async {
+                    self.exportResults()
+                }
             }
         }
     }
