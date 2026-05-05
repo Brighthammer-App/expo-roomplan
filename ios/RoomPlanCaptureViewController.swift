@@ -522,7 +522,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     @objc
     public func stopSession() {
-        roomCaptureView?.captureSession.stop(pauseARSession: false)
+        roomCaptureView?.captureSession.stop(pauseARSession: true)
         isSessionRunning = false
         // Remove scanning hint
         view.viewWithTag(887)?.removeFromSuperview()
