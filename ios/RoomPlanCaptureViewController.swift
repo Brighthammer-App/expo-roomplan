@@ -288,7 +288,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // once the room is ready, instead of racing with the 0.5s delay below.
         if isSessionRunning {
             exportPendingAfterBuild = true
-            roomCaptureView?.captureSession.stop()
+            roomCaptureView?.captureSession.stop(pauseARSession: true)
         } else {
             // Session already stopped (user tapped stop first, then Done) — room is built,
             // safe to export after the brief overlay animation.
@@ -522,7 +522,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     @objc
     public func stopSession() {
-        roomCaptureView?.captureSession.stop(pauseARSession: true)
+        roomCaptureView?.captureSession.stop(pauseARSession: false)
         isSessionRunning = false
         // Remove scanning hint
         view.viewWithTag(887)?.removeFromSuperview()
