@@ -35,7 +35,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBOutlet var finishButton: UIButton!
     @IBOutlet var anotherScanButton: UIButton!
     @IBOutlet var exportButton: UIButton!
-    private var postScanButtonStack: UIStackView?
+    private var postScanCardView: UIView?
+    private var backdropTopToFinishConstraint: NSLayoutConstraint!
+    private var backdropTopToPostScanConstraint: NSLayoutConstraint?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -135,14 +137,16 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setupConstraints() {
+        backdropTopToFinishConstraint = backdropView.topAnchor.constraint(
+            equalTo: finishButton.topAnchor, constant: -20
+        )
+
         NSLayoutConstraint.activate([
             // Frosted backdrop — spans full width, anchored to bottom, top driven by button
             backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            backdropView.topAnchor.constraint(
-                equalTo: finishButton.topAnchor, constant: -20
-            ),
+            backdropTopToFinishConstraint,
 
             // Record button — centred, 20pt above safe area bottom
             finishButton.bottomAnchor.constraint(
@@ -163,84 +167,170 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         ])
     }
 
+    private func makePostScanActionButton(
+        title: String,
+        isPrimary: Bool
+    ) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        button.layer.cornerRadius = 14
+        button.layer.masksToBounds = true
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
+        button.setTitle(title, for: .normal)
+
+        if isPrimary {
+            button.backgroundColor = UIColor.systemBlue
+            button.setTitleColor(.white, for: .normal)
+            button.setTitleColor(UIColor.white.withAlphaComponent(0.65), for: .disabled)
+        } else {
+            button.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+            button.setTitleColor(.white, for: .normal)
+            button.layer.borderWidth = 1
+            button.layer.borderColor = UIColor.white.withAlphaComponent(0.28).cgColor
+        }
+
+        return button
+    }
+
     private func setupPostScanUI() {
-        // initialize and set up the export button
-        exportButton = UIButton()
-        exportButton.translatesAutoresizingMaskIntoConstraints = false
-        exportButton.setTitleColor(.white, for: .normal)
-        exportButton.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        exportButton.titleLabel?.textAlignment = .center
-        exportButton.titleLabel?.numberOfLines = 0
-        exportButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
-        exportButton.setTitle("Done", for: .normal)
-        // round corners
-        exportButton.layer.masksToBounds = true
-        exportButton.layer.cornerRadius = 15
+        guard postScanCardView == nil else { return }
 
-        exportButton.addTarget(
-            self,
-            action: #selector(superExportResults),
-            for: .touchUpInside
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        card.layer.cornerRadius = 20
+        card.layer.masksToBounds = true
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        postScanCardView = card
+        view.addSubview(card)
+        view.bringSubviewToFront(card)
+        view.bringSubviewToFront(cancelButton)
+
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = "Room scan captured"
+        titleLabel.textColor = .white
+        titleLabel.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+        titleLabel.numberOfLines = 0
+
+        let helperLabel = UILabel()
+        helperLabel.translatesAutoresizingMaskIntoConstraints = false
+        helperLabel.text =
+            "Scan another room to add it to this floor plan, or finish to create the final floor plan."
+        helperLabel.textColor = UIColor.white.withAlphaComponent(0.88)
+        helperLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+        helperLabel.numberOfLines = 0
+
+        anotherScanButton = makePostScanActionButton(
+            title: "Scan Another Room",
+            isPrimary: false
         )
-
-        // initialize and set up the "anotherScan" button
-        anotherScanButton = UIButton()
-        anotherScanButton.translatesAutoresizingMaskIntoConstraints = false
-        anotherScanButton.setTitleColor(.white, for: .normal)
-        anotherScanButton.backgroundColor = UIColor.black.withAlphaComponent(
-            0.6
-        )
-        anotherScanButton.titleLabel?.textAlignment = .center
-        anotherScanButton.titleLabel?.numberOfLines = 0
-        anotherScanButton.titleLabel?.font = UIFont.systemFont(ofSize: 20, weight: .bold)
-        anotherScanButton.setTitle("Add Room", for: .normal)
-        // round corners
-        anotherScanButton.layer.masksToBounds = true
-        anotherScanButton.layer.cornerRadius = 15
-
         anotherScanButton.addTarget(
             self,
             action: #selector(restartSession),
             for: .touchUpInside
         )
 
+        exportButton = makePostScanActionButton(
+            title: "Finish Floor Plan",
+            isPrimary: true
+        )
+        exportButton.addTarget(
+            self,
+            action: #selector(confirmFinishFloorPlan),
+            for: .touchUpInside
+        )
+
         let buttonStack = UIStackView(arrangedSubviews: [
             anotherScanButton, exportButton,
         ])
-        buttonStack.axis = .horizontal
-        buttonStack.spacing = 16
-        buttonStack.distribution = .fillEqually
+        buttonStack.axis = .vertical
+        buttonStack.spacing = 12
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
-        postScanButtonStack = buttonStack
-        view.addSubview(buttonStack)
 
-        // alter text on cancel buttons
+        let contentStack = UIStackView(arrangedSubviews: [
+            titleLabel, helperLabel, buttonStack,
+        ])
+        contentStack.axis = .vertical
+        contentStack.spacing = 12
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.setCustomSpacing(16, after: helperLabel)
+        card.addSubview(contentStack)
+
+        backdropTopToFinishConstraint.isActive = false
+        backdropTopToPostScanConstraint = backdropView.topAnchor.constraint(
+            equalTo: card.topAnchor, constant: -12
+        )
+        backdropTopToPostScanConstraint?.isActive = true
+        backdropView.isUserInteractionEnabled = true
+
         UIView.transition(
             with: cancelButton,
             duration: 0.5,
             options: .transitionCrossDissolve,
             animations: {
                 self.cancelButton.backgroundColor = UIColor.black
-                    .withAlphaComponent(0.6)  // make button background visible
+                    .withAlphaComponent(0.6)
             },
             completion: nil
         )
-        // Keep Finish active; it will now confirm exit when no session is running.
+
+        card.alpha = 0
+        card.transform = CGAffineTransform(translationX: 0, y: 24)
+        UIView.animate(
+            withDuration: 0.35,
+            delay: 0,
+            usingSpringWithDamping: 0.86,
+            initialSpringVelocity: 0.4,
+            options: .curveEaseOut
+        ) {
+            card.alpha = 1
+            card.transform = .identity
+        }
 
         NSLayoutConstraint.activate([
-            exportButton.heightAnchor.constraint(equalToConstant: 60),
-            anotherScanButton.heightAnchor.constraint(equalToConstant: 60),
+            card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            card.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16
+            ),
 
-            buttonStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            buttonStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            buttonStack.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
-            ),
-            // Pin stack top to backdrop top + padding — backdrop grows to contain it
-            buttonStack.topAnchor.constraint(
-                equalTo: backdropView.topAnchor, constant: 20
-            ),
+            contentStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 20),
+            contentStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
         ])
+    }
+
+    private func teardownPostScanUI() {
+        postScanCardView?.removeFromSuperview()
+        postScanCardView = nil
+        backdropTopToPostScanConstraint?.isActive = false
+        backdropTopToPostScanConstraint = nil
+        backdropTopToFinishConstraint.isActive = true
+        backdropView.isUserInteractionEnabled = false
+    }
+
+    @objc private func confirmFinishFloorPlan() {
+        let alert = UIAlertController(
+            title: "Finish floor plan?",
+            message:
+                "This will create the final floor plan from all scanned rooms. You won't be able to add more rooms to this scan afterward.",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(
+            UIAlertAction(title: "Keep Scanning", style: .cancel, handler: nil)
+        )
+        alert.addAction(
+            UIAlertAction(title: "Finish Floor Plan", style: .default) { _ in
+                self.superExportResults(self.exportButton as Any)
+            }
+        )
+
+        present(alert, animated: true, completion: nil)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -258,7 +348,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         exportButton.isEnabled = false
         exportButton.removeTarget(
             self,
-            action: #selector(superExportResults),
+            action: #selector(confirmFinishFloorPlan),
             for: .touchUpInside
         )
         // Also disable Finish to avoid exiting mid-export
@@ -501,8 +591,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
         exportPendingAfterBuild = false
-        postScanButtonStack?.removeFromSuperview()
-        postScanButtonStack = nil
+        teardownPostScanUI()
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
         // Restore the record button
