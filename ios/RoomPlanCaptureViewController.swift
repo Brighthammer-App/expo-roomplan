@@ -4,6 +4,7 @@ import Foundation
 import RealityKit
 import RoomPlan
 import UIKit
+import AVFoundation
 
 @available(iOS 17.0, *)
 class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
@@ -13,6 +14,11 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var roomCaptureSessionConfig: RoomCaptureSession.Configuration =
         RoomCaptureSession.Configuration()
     private var isSessionRunning: Bool = false
+
+    // AV preview — warms up the camera hardware before RoomPlan takes over.
+    // Shown behind the instructions overlay; crossfades out when scanning starts.
+    private var avSession: AVCaptureSession?
+    private var avPreviewLayer: AVCaptureVideoPreviewLayer?
 
     private var finalResults: CapturedRoom?
     private var finalStructure: CapturedStructure?
@@ -59,6 +65,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // Temporary full-size frame — trimmed to sit above the backdrop in viewDidLayoutSubviews.
         roomCaptureView = RoomCaptureView(frame: view.bounds)
         roomCaptureView?.captureSession.delegate = self
+        // Hide until scanning starts so the AV warm-up preview shows through underneath
+        roomCaptureView?.alpha = 0
         view.insertSubview(roomCaptureView, at: 0)
 
         setupButtons()
@@ -336,11 +344,50 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         setupReadyUI()
+        startAVPreview()
     }
 
     override func viewWillDisappear(_ flag: Bool) {
         super.viewWillDisappear(flag)
+        stopAVPreview()
         stopSession()
+    }
+
+    // MARK: - AV Camera Preview (warm-up)
+
+    private func startAVPreview() {
+        // Check permission first — if not granted, silently skip (RoomPlan will handle it)
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device) else { return }
+
+        let session = AVCaptureSession()
+        session.sessionPreset = .high
+        if session.canAddInput(input) { session.addInput(input) }
+
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        previewLayer.videoGravity = .resizeAspectFill
+        previewLayer.frame = view.bounds
+        // Insert behind everything — RoomCaptureView is at index 0, so go below it
+        view.layer.insertSublayer(previewLayer, at: 0)
+
+        avSession = session
+        avPreviewLayer = previewLayer
+
+        // Start on a background thread so we don't block the main thread
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.startRunning()
+        }
+    }
+
+    private func stopAVPreview() {
+        avPreviewLayer?.removeFromSuperlayer()
+        avPreviewLayer = nil
+        let session = avSession
+        avSession = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            session?.stopRunning()
+        }
     }
 
     @IBAction func superExportResults(_ sender: Any) {
@@ -556,10 +603,35 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 overlay.removeFromSuperview()
             })
         }
-        roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
         setFinishButtonToRecording()
         showScanningHint()
+
+        // Stop the AV preview and hand the camera off to RoomPlan.
+        // We stop on a background thread then call run() on main once it's done —
+        // this avoids the two sessions fighting over the camera at the same time,
+        // which is the source of the freeze/spike on first start.
+        let sessionToStop = avSession
+        avSession = nil
+        let layerToFade = avPreviewLayer
+        avPreviewLayer = nil
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            sessionToStop?.stopRunning()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.roomCaptureView?.captureSession.run(configuration: self.roomCaptureSessionConfig)
+                // Crossfade: bring RoomCaptureView in while fading the AV preview out
+                UIView.animate(withDuration: 0.2) {
+                    self.roomCaptureView?.alpha = 1
+                }
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.2)
+                layerToFade?.opacity = 0
+                CATransaction.setCompletionBlock { layerToFade?.removeFromSuperlayer() }
+                CATransaction.commit()
+            }
+        }
     }
 
     private func showScanningHint() {
