@@ -25,6 +25,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private let structureBuilder = StructureBuilder(options: [.beautifyObjects])
 
     var onDismiss: (([String: Any]) -> Void)?
+    var onScanError: (([String: Any]) -> Void)?
 
     var scanName: String?
     var exportType: String?
@@ -518,27 +519,34 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 present(activityVC, animated: true, completion: nil)
 
             } catch {
-                print("[RoomPlan] ERROR MERGING")
-                print("[RoomPlan] Error = \(error)")
-                self.sendScanResultAndDismiss(status: .Error)
+                print("[RoomPlan] ERROR MERGING: \(error)")
+                self.sendScanResultAndDismiss(status: .Error, errorMessage: error.localizedDescription, errorContext: "exportResults")
                 return
             }
         }
     }
 
-    func sendScanResultAndDismiss(status: ScanStatus? = nil, scanUrl: String? = nil, jsonUrl: String? = nil) {
+    func sendScanResultAndDismiss(status: ScanStatus? = nil, scanUrl: String? = nil, jsonUrl: String? = nil, errorMessage: String? = nil, errorContext: String? = nil) {
         var eventData: [String: Any] = [:]
-        
+
         if let status = status {
             eventData["status"] = status.rawValue
         }
-        
+
         if let jsonUrl = jsonUrl {
             eventData["jsonUrl"] = jsonUrl
         }
 
         if let scanUrl = scanUrl {
             eventData["scanUrl"] = scanUrl
+        }
+
+        if let errorMessage = errorMessage {
+            eventData["errorMessage"] = errorMessage
+        }
+
+        if let errorContext = errorContext {
+            eventData["errorContext"] = errorContext
         }
         
         // Send the unified event
@@ -770,13 +778,15 @@ extension RoomPlanCaptureViewController {
         print("[RoomPlan] didEndWith")
         let roomBuilder = RoomBuilder(options: [.beautifyObjects])
         Task {
-            if let capturedRoom = try? await roomBuilder.capturedRoom(
-                from: didEndWith
-            ) {
+            do {
+                let capturedRoom = try await roomBuilder.capturedRoom(from: didEndWith)
                 print("[RoomPlan] Appending new captured room")
                 self.capturedRoomArray.append(capturedRoom)
-            } else {
-                print("[RoomPlan] Failed to build captured room.")
+            } catch {
+                // Non-fatal: user stays in the scan UI and can try again.
+                // Forward the error to React for Sentry logging without dismissing.
+                print("[RoomPlan] Failed to build captured room: \(error)")
+                self.onScanError?(["errorMessage": error.localizedDescription, "errorContext": "roomBuilder"])
             }
             // If Done was tapped while the session was still running, export now that the
             // room is built rather than relying on the fixed 0.5s delay in superExportResults.

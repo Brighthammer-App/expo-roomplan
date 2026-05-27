@@ -26,5 +26,7 @@ export interface UseRoomPlanInterface {
     roomScanStatus: ScanStatus;
     jsonUrl: string | null;
     scanUrl: string | null;
+    /** Native error message forwarded from Swift when status is Error */
+    nativeError: { message: string; context: string } | null;
 }
 //# sourceMappingURL=ExpoRoomplan.types.d.ts.map

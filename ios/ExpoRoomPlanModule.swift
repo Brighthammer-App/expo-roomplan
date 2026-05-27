@@ -9,7 +9,7 @@ public class ExpoRoomPlanModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ExpoRoomPlan")
 
-        Events("onDismissEvent")
+        Events("onDismissEvent", "onScanError")
 
         Constant("isSupported") {
             RoomCaptureSession.isSupported
@@ -27,6 +27,10 @@ public class ExpoRoomPlanModule: Module {
 
                 captureVC.onDismiss = { eventData in
                     self.sendEvent("onDismissEvent", eventData)
+                }
+
+                captureVC.onScanError = { errorData in
+                    self.sendEvent("onScanError", errorData)
                 }
 
                 guard

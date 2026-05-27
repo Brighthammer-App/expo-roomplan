@@ -6,21 +6,24 @@ export default function useRoomPlan(params) {
     const [roomScanStatus, setRoomScanStatus] = useState(ScanStatus.NotStarted);
     const [scanUrl, setScanUrl] = useState(null);
     const [jsonUrl, setJsonUrl] = useState(null);
+    const [nativeError, setNativeError] = useState(null);
     useEffect(() => {
-        const sub = ExpoRoomPlan.addListener?.("onDismissEvent", (event) => {
+        const dismissSub = ExpoRoomPlan.addListener?.("onDismissEvent", (event) => {
             setRoomScanStatus(event.status);
-            console.log("RoomScan status: ", event.status);
-            if (event.scanUrl) {
-                setScanUrl(event.scanUrl);
-                console.log("Scan URL: ", event.scanUrl);
-            }
-            if (event.jsonUrl) {
-                setJsonUrl(event.jsonUrl);
-                console.log("JSON URL: ", event.jsonUrl);
+            if (event.scanUrl) setScanUrl(event.scanUrl);
+            if (event.jsonUrl) setJsonUrl(event.jsonUrl);
+            if (event.errorMessage) {
+                setNativeError({ message: event.errorMessage, context: event.errorContext ?? "unknown" });
+            } else {
+                setNativeError(null);
             }
         });
+        const errorSub = ExpoRoomPlan.addListener?.("onScanError", (event) => {
+            setNativeError({ message: event.errorMessage, context: event.errorContext ?? "unknown" });
+        });
         return () => {
-            sub?.remove();
+            dismissSub?.remove();
+            errorSub?.remove();
         };
     }, []);
     const startRoomPlan = async (scanName) => {
@@ -28,14 +31,11 @@ export default function useRoomPlan(params) {
             throw new Error("RoomPlan SDK only available on iOS.");
         }
         try {
-            // ExportType: defaults internally to 'parametric'
-            // Model file location is not returned by default.
             const exportType = params?.exportType ?? ExportType.Parametric;
             const sendFileLoc = params?.sendFileLoc ?? false;
             ExpoRoomPlan.startCapture(scanName, exportType, sendFileLoc);
         }
         catch (err) {
-            console.error("startCapture failed:", err);
             throw err;
         }
     };
@@ -44,6 +44,7 @@ export default function useRoomPlan(params) {
         roomScanStatus,
         scanUrl,
         jsonUrl,
+        nativeError,
     };
 }
 //# sourceMappingURL=useRoomPlan.js.map
