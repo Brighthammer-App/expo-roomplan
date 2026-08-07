@@ -48,6 +48,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.backgroundColor = .black
         setupRoomCaptureView()
         setupActivityIndicator()
     }
@@ -59,11 +60,48 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.addSubview(activityIndicator)
     }
 
-    // Backdrop is sized by Auto Layout to wrap its content; capture view fills above it.
+    // Backdrop is sized by Auto Layout to wrap its content; capture view is 4:3 over the full screen
+    // so controls can sit in the letterbox below (avoids side insets on iPad when the bar ate height).
     private var backdropView: UIVisualEffectView!
 
+    /// Full screen — do not clip to the frosted bar, or iPad portrait can't fit full-width 4:3.
+    private var availablePreviewRect: CGRect {
+        return view.bounds
+    }
+
+    /// Fit a 4:3 rectangle inside `available`, top-aligned and horizontally centered.
+    /// Portrait uses 3:4 (width:height); landscape uses 4:3.
+    private func previewFrame(in available: CGRect) -> CGRect {
+        guard available.width > 0, available.height > 0 else { return .zero }
+
+        let isLandscape = available.width > available.height
+        let targetAspect = isLandscape ? (4.0 / 3.0) : (3.0 / 4.0) // width / height
+        let availableAspect = available.width / available.height
+
+        let size: CGSize
+        if availableAspect > targetAspect {
+            // Available is wider than target — height-constrained
+            let height = available.height
+            size = CGSize(width: height * targetAspect, height: height)
+        } else {
+            // Available is taller/narrower than target — width-constrained
+            let width = available.width
+            size = CGSize(width: width, height: width / targetAspect)
+        }
+
+        let x = available.minX + (available.width - size.width) / 2
+        let y = available.minY
+        return CGRect(origin: CGPoint(x: x, y: y), size: size)
+    }
+
+    private func layoutCameraSurfaces() {
+        let frame = previewFrame(in: availablePreviewRect)
+        roomCaptureView.frame = frame
+        avPreviewLayer?.frame = frame
+    }
+
     private func setupRoomCaptureView() {
-        // Temporary full-size frame — trimmed to sit above the backdrop in viewDidLayoutSubviews.
+        // Temporary frame — sized to 4:3 above the backdrop in viewDidLayoutSubviews.
         roomCaptureView = RoomCaptureView(frame: view.bounds)
         roomCaptureView?.captureSession.delegate = self
         // Hide until scanning starts so the AV warm-up preview shows through underneath
@@ -85,15 +123,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             ring.frame = finishButton.bounds
         }
 
-        // Squash capture view to end exactly where the frosted backdrop begins
-        if let backdrop = backdropView {
-            let backdropTop = backdrop.frame.minY
-            roomCaptureView.frame = CGRect(
-                x: 0, y: 0,
-                width: view.bounds.width,
-                height: backdropTop
-            )
-        }
+        layoutCameraSurfaces()
     }
 
     private func setupButtons() {
@@ -368,7 +398,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.frame = view.bounds
+        previewLayer.frame = previewFrame(in: availablePreviewRect)
         // Insert behind everything — RoomCaptureView is at index 0, so go below it
         view.layer.insertSublayer(previewLayer, at: 0)
 
