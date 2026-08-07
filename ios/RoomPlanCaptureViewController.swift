@@ -49,18 +49,26 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var backdropTopToFinishConstraint: NSLayoutConstraint!
     private var backdropTopToPostScanConstraint: NSLayoutConstraint?
 
-    /// Matches quick-camera `TABLET_RAIL_WIDTH` / `TABLET_MIN_DIMENSION`.
+    /// Matches quick-camera `TABLET_RAIL_WIDTH` / `TABLET_MIN_DIMENSION` / `CameraShutterButton`.
     private let railWidth: CGFloat = 120
     private let tabletMinDimension: CGFloat = 768
     private let phoneFinishButtonSize: CGFloat = 72
     private let tabletFinishButtonSize: CGFloat = 84
+    private let shutterBorderWidth: CGFloat = 4
+    private let shutterRed = UIColor(red: 1, green: 59.0 / 255.0, blue: 48.0 / 255.0, alpha: 1)
 
     private var sideRailView: UIView!
     private var sideRailWidthConstraint: NSLayoutConstraint!
     private var phoneFinishConstraints: [NSLayoutConstraint] = []
+    private var phoneFinishBottomConstraint: NSLayoutConstraint!
     private var tabletFinishConstraints: [NSLayoutConstraint] = []
+    private var tabletFinishCenterYConstraint: NSLayoutConstraint!
     private var finishButtonWidthConstraint: NSLayoutConstraint!
     private var finishButtonHeightConstraint: NSLayoutConstraint!
+    private var finishButtonInnerView: UIView!
+    private var finishButtonInnerWidthConstraint: NSLayoutConstraint!
+    private var finishButtonInnerHeightConstraint: NSLayoutConstraint!
+    private var finishButtonShowsRecordingStyle: Bool = false
     private var backdropTrailingPhoneConstraint: NSLayoutConstraint!
     private var backdropTrailingTabletConstraint: NSLayoutConstraint!
     private var postScanCardTrailingConstraint: NSLayoutConstraint?
@@ -175,39 +183,71 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         super.viewDidLayoutSubviews()
 
         applyControlLayout()
-
-        // Keep the ring layer sized to the button bounds
-        if let ring = finishButton.layer.sublayers?.first(where: { $0.name == "recordRing" }) as? CAShapeLayer {
-            let inset: CGFloat = 3
-            let rect = finishButton.bounds.insetBy(dx: inset, dy: inset)
-            ring.path = UIBezierPath(ovalIn: rect).cgPath
-            ring.frame = finishButton.bounds
-        }
-
         layoutCameraSurfaces()
     }
 
+    /// Shutter dims matching `CameraShutterButton` video mode (phone / tablet).
+    private func shutterInnerDims(recording: Bool) -> (size: CGFloat, cornerRadius: CGFloat) {
+        let tablet = isTabletLayout
+        if recording {
+            return tablet ? (32, 6) : (28, 5)
+        }
+        let inner = tablet ? 66.0 : 58.0
+        return (inner, inner / 2)
+    }
+
+    private func applyFinishButtonAppearance(animated: Bool) {
+        let outer = isTabletLayout ? tabletFinishButtonSize : phoneFinishButtonSize
+        let dims = shutterInnerDims(recording: finishButtonShowsRecordingStyle)
+
+        let updates = {
+            self.finishButton.layer.cornerRadius = outer / 2
+            self.finishButtonInnerWidthConstraint.constant = dims.size
+            self.finishButtonInnerHeightConstraint.constant = dims.size
+            self.finishButtonInnerView.layer.cornerRadius = dims.cornerRadius
+            self.finishButtonInnerView.backgroundColor = self.shutterRed
+            self.finishButton.layoutIfNeeded()
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.2, animations: updates)
+        } else {
+            updates()
+        }
+    }
+
     private func setupButtons() {
-        // Record/stop button — phone: bottom centre; iPad: right rail (quick camera style)
-        finishButton = UIButton()
+        // Record/stop — matches quick-camera video shutter (white ring + red inner / stop square)
+        finishButton = UIButton(type: .custom)
         finishButton.translatesAutoresizingMaskIntoConstraints = false
-        finishButton.backgroundColor = UIColor.systemRed
+        finishButton.backgroundColor = .clear
         finishButton.layer.masksToBounds = true
         finishButton.layer.cornerRadius = phoneFinishButtonSize / 2
+        finishButton.layer.borderWidth = shutterBorderWidth
+        finishButton.layer.borderColor = UIColor.white.cgColor
+        finishButton.accessibilityLabel = "Start scanning"
 
-        // Record circle icon — shown before scanning starts
-        let recordConfig = UIImage.SymbolConfiguration(pointSize: 32, weight: .bold)
-        let recordImage = UIImage(systemName: "circle.fill", withConfiguration: recordConfig)
-        finishButton.setImage(recordImage, for: .normal)
-        finishButton.tintColor = .white
+        finishButtonInnerView = UIView()
+        finishButtonInnerView.translatesAutoresizingMaskIntoConstraints = false
+        finishButtonInnerView.isUserInteractionEnabled = false
+        finishButtonInnerView.backgroundColor = shutterRed
+        finishButtonInnerView.layer.masksToBounds = true
+        let idleDims = shutterInnerDims(recording: false)
+        finishButtonInnerView.layer.cornerRadius = idleDims.cornerRadius
+        finishButton.addSubview(finishButtonInnerView)
 
-        // Outer ring (like a camera shutter ring)
-        let ringLayer = CAShapeLayer()
-        ringLayer.strokeColor = UIColor.white.cgColor
-        ringLayer.fillColor = UIColor.clear.cgColor
-        ringLayer.lineWidth = 3
-        ringLayer.name = "recordRing"
-        finishButton.layer.addSublayer(ringLayer)
+        finishButtonInnerWidthConstraint = finishButtonInnerView.widthAnchor.constraint(
+            equalToConstant: idleDims.size
+        )
+        finishButtonInnerHeightConstraint = finishButtonInnerView.heightAnchor.constraint(
+            equalToConstant: idleDims.size
+        )
+        NSLayoutConstraint.activate([
+            finishButtonInnerView.centerXAnchor.constraint(equalTo: finishButton.centerXAnchor),
+            finishButtonInnerView.centerYAnchor.constraint(equalTo: finishButton.centerYAnchor),
+            finishButtonInnerWidthConstraint,
+            finishButtonInnerHeightConstraint,
+        ])
 
         finishButton.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
 
@@ -230,21 +270,33 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         view.addSubview(finishButton)
 
-        // Cancel button — top left of main column, text only
-        cancelButton = UIButton()
+        // Cancel — frosted pill (inspired by quick-camera Done)
+        cancelButton = UIButton(type: .system)
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
-        cancelButton.setTitleColor(.white, for: .normal)
-        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
-        cancelButton.setTitle("Cancel", for: .normal)
-        cancelButton.backgroundColor = UIColor.black.withAlphaComponent(0.4)
-        cancelButton.layer.masksToBounds = true
-        cancelButton.layer.cornerRadius = 15
-        var config = UIButton.Configuration.plain()
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
-        cancelButton.configuration = config
-
+        applyCancelButtonChrome(emphasized: false)
         cancelButton.addTarget(self, action: #selector(cancelSession), for: .touchUpInside)
         view.addSubview(cancelButton)
+    }
+
+    /// Frosted pill chrome inspired by quick-camera Done (`rgba(255,255,255,0.12)` + hairline).
+    private func applyCancelButtonChrome(emphasized: Bool) {
+        var config = UIButton.Configuration.plain()
+        config.title = "Cancel"
+        config.baseForegroundColor = UIColor.white.withAlphaComponent(0.96)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 20, bottom: 11, trailing: 20)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+            outgoing.kern = 0.35
+            return outgoing
+        }
+        config.background.backgroundColor = UIColor.white.withAlphaComponent(emphasized ? 0.18 : 0.12)
+        config.background.cornerRadius = 22
+        let scale = view.window?.screen.scale ?? UIScreen.main.scale
+        config.background.strokeWidth = 1.0 / scale
+        config.background.strokeColor = UIColor.white.withAlphaComponent(0.32)
+        cancelButton.configuration = config
+        cancelButton.alpha = cancelButton.isEnabled ? 1.0 : 0.4
     }
 
     private func setupConstraints() {
@@ -266,16 +318,23 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         sideRailWidthConstraint = sideRailView.widthAnchor.constraint(equalToConstant: 0)
 
+        // Phone: match quick camera `paddingBottom: Math.max(insets.bottom, 12) + 8`
+        phoneFinishBottomConstraint = finishButton.bottomAnchor.constraint(
+            equalTo: view.bottomAnchor, constant: -20
+        )
         phoneFinishConstraints = [
-            finishButton.bottomAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
-            ),
+            phoneFinishBottomConstraint,
             finishButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
         ]
 
+        // iPad: match quick-camera rail (`paddingTop: 24` + vertically centered stack).
+        // Asymmetric top padding shifts the visual center ~12pt below mid-rail.
+        tabletFinishCenterYConstraint = finishButton.centerYAnchor.constraint(
+            equalTo: sideRailView.centerYAnchor, constant: 12
+        )
         tabletFinishConstraints = [
             finishButton.centerXAnchor.constraint(equalTo: sideRailView.centerXAnchor),
-            finishButton.centerYAnchor.constraint(equalTo: sideRailView.centerYAnchor),
+            tabletFinishCenterYConstraint,
         ]
 
         NSLayoutConstraint.activate([
@@ -295,12 +354,12 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
             // Cancel button — top left of main column
             cancelButton.topAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12
             ),
             cancelButton.leadingAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
             ),
-            cancelButton.heightAnchor.constraint(equalToConstant: 30),
+            cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 
@@ -326,7 +385,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             NSLayoutConstraint.activate(tabletFinishConstraints)
             finishButtonWidthConstraint.constant = tabletFinishButtonSize
             finishButtonHeightConstraint.constant = tabletFinishButtonSize
-            finishButton.layer.cornerRadius = tabletFinishButtonSize / 2
 
             backdropTrailingPhoneConstraint.isActive = false
             backdropTrailingTabletConstraint.isActive = true
@@ -339,7 +397,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             NSLayoutConstraint.activate(phoneFinishConstraints)
             finishButtonWidthConstraint.constant = phoneFinishButtonSize
             finishButtonHeightConstraint.constant = phoneFinishButtonSize
-            finishButton.layer.cornerRadius = phoneFinishButtonSize / 2
+            // Same bottom inset as quick-camera shutter row
+            phoneFinishBottomConstraint.constant =
+                -(max(view.safeAreaInsets.bottom, 12) + 8)
 
             backdropTrailingTabletConstraint.isActive = false
             backdropTrailingPhoneConstraint.isActive = true
@@ -348,6 +408,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 backdropTopToFinishConstraint.isActive = true
             }
         }
+
+        applyFinishButtonAppearance(animated: false)
 
         updateReadyOverlayForLayout(isTablet: tablet)
 
@@ -476,8 +538,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             duration: 0.5,
             options: .transitionCrossDissolve,
             animations: {
-                self.cancelButton.backgroundColor = UIColor.black
-                    .withAlphaComponent(0.6)
+                self.applyCancelButtonChrome(emphasized: true)
             },
             completion: nil
         )
@@ -712,7 +773,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             duration: 0.2,
             options: .transitionCrossDissolve,
             animations: {
-                self.cancelButton.backgroundColor = UIColor.white
+                self.applyCancelButtonChrome(emphasized: false)
+                self.cancelButton.alpha = 0.4
             },
             completion: nil
         )
@@ -979,7 +1041,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             duration: 0.5,
             options: .transitionCrossDissolve,
             animations: {
-                self.cancelButton.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+                self.cancelButton.isEnabled = true
+                self.applyCancelButtonChrome(emphasized: false)
             },
             completion: nil
         )
@@ -1011,14 +1074,17 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setFinishButtonToRecording() {
-        UIView.animate(withDuration: 0.2) {
-            self.finishButton.backgroundColor = UIColor.systemRed
-        }
-        let stopConfig = UIImage.SymbolConfiguration(pointSize: 26, weight: .bold)
-        let stopImage = UIImage(systemName: "stop.fill", withConfiguration: stopConfig)
-        finishButton.setImage(stopImage, for: .normal)
-        finishButton.tintColor = .white
+        finishButtonShowsRecordingStyle = true
+        finishButton.accessibilityLabel = "Stop scanning"
         finishButton.isEnabled = true
+        applyFinishButtonAppearance(animated: true)
+    }
+
+    private func setFinishButtonToIdle() {
+        finishButtonShowsRecordingStyle = false
+        finishButton.accessibilityLabel = "Start scanning"
+        finishButton.isEnabled = true
+        applyFinishButtonAppearance(animated: true)
     }
 
     @objc
