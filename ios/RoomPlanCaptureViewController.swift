@@ -46,8 +46,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBOutlet var anotherScanButton: UIButton!
     @IBOutlet var exportButton: UIButton!
     private var postScanCardView: UIView?
+    private var errorCardView: UIView?
+    private var lastDismissErrorCode: String?
+    private var lastDismissErrorMessage: String?
+    private var lastDismissErrorContext: String?
     private var backdropTopToFinishConstraint: NSLayoutConstraint!
     private var backdropTopToPostScanConstraint: NSLayoutConstraint?
+    private var backdropTopToErrorCardConstraint: NSLayoutConstraint?
+    private var errorCardTrailingConstraint: NSLayoutConstraint?
 
     /// Matches quick-camera `TABLET_RAIL_WIDTH` / `TABLET_MIN_DIMENSION` / `CameraShutterButton`.
     private let railWidth: CGFloat = 120
@@ -367,6 +373,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private func applyControlLayout() {
         let tablet = isTabletLayout
         let isPostScan = postScanCardView != nil
+        let isErrorCard = errorCardView != nil
+        let showBottomChrome = isPostScan || isErrorCard
 
         sideRailView.isHidden = !tablet
         sideRailView.isUserInteractionEnabled = tablet
@@ -389,8 +397,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             backdropTrailingPhoneConstraint.isActive = false
             backdropTrailingTabletConstraint.isActive = true
             // No bottom frosted chrome during scan on iPad
-            backdropView.isHidden = !isPostScan
-            if !isPostScan {
+            backdropView.isHidden = !showBottomChrome
+            if !showBottomChrome {
                 backdropTopToFinishConstraint.isActive = false
             }
         } else {
@@ -404,7 +412,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             backdropTrailingTabletConstraint.isActive = false
             backdropTrailingPhoneConstraint.isActive = true
             backdropView.isHidden = false
-            if !isPostScan {
+            if !showBottomChrome {
                 backdropTopToFinishConstraint.isActive = true
             }
         }
@@ -420,6 +428,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.bringSubviewToFront(cancelButton)
         if let card = postScanCardView {
             view.bringSubviewToFront(card)
+            view.bringSubviewToFront(cancelButton)
+        }
+        if let errorCard = errorCardView {
+            view.bringSubviewToFront(errorCard)
             view.bringSubviewToFront(cancelButton)
         }
     }
@@ -592,6 +604,345 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         backdropTopToPostScanConstraint = nil
         backdropView.isUserInteractionEnabled = false
         applyControlLayout()
+    }
+
+    // MARK: - Scan error card
+
+    private struct ScanErrorCopy {
+        let code: String
+        let title: String
+        let message: String
+    }
+
+    private func captureErrorCopy(from error: RoomCaptureSession.CaptureError) -> ScanErrorCopy {
+        switch error {
+        case .exceedSceneSizeLimit:
+            return ScanErrorCopy(
+                code: "exceedSceneSizeLimit",
+                title: "Scan area too large",
+                message: "This scan covered more space than RoomPlan can handle. Finish with what you have, or start a new scan for another area."
+            )
+        case .deviceTooHot:
+            return ScanErrorCopy(
+                code: "deviceTooHot",
+                title: "Device too warm",
+                message: "Your device needs to cool down before scanning can continue. Wait a minute, then try again."
+            )
+        case .worldTrackingFailure:
+            return ScanErrorCopy(
+                code: "worldTrackingFailure",
+                title: "Tracking lost",
+                message: "Move slowly with good lighting, and avoid mirrors or reflective surfaces. Then try again."
+            )
+        case .deviceNotSupported:
+            return ScanErrorCopy(
+                code: "deviceNotSupported",
+                title: "Scanning not supported",
+                message: "This device doesn’t support LiDAR room scanning."
+            )
+        case .invalidARConfiguration:
+            return ScanErrorCopy(
+                code: "invalidARConfiguration",
+                title: "Camera setup failed",
+                message: "Something went wrong with the camera session. Close and try again."
+            )
+        case .internalError:
+            return ScanErrorCopy(
+                code: "internalError",
+                title: "Scan interrupted",
+                message: "Room scanning hit an unexpected problem. Try again, or close and start over."
+            )
+        @unknown default:
+            return ScanErrorCopy(
+                code: "unknown",
+                title: "Scan interrupted",
+                message: "Room scanning was interrupted. Try again, or close and start over."
+            )
+        }
+    }
+
+    private func emitScanError(message: String, context: String, code: String?) {
+        var payload: [String: Any] = [
+            "errorMessage": message,
+            "errorContext": context,
+        ]
+        if let code {
+            payload["errorCode"] = code
+        }
+        let deliver = {
+            self.lastDismissErrorMessage = message
+            self.lastDismissErrorContext = context
+            self.lastDismissErrorCode = code
+            self.onScanError?(payload)
+        }
+        if Thread.isMainThread {
+            deliver()
+        } else {
+            DispatchQueue.main.async(execute: deliver)
+        }
+    }
+
+    private enum ScanErrorPrimaryAction {
+        case `continue`
+        case tryAgain
+        case retryExport
+        case closeOnly
+    }
+
+    private func teardownErrorCard() {
+        errorCardView?.removeFromSuperview()
+        errorCardView = nil
+        errorCardTrailingConstraint = nil
+        backdropTopToErrorCardConstraint?.isActive = false
+        backdropTopToErrorCardConstraint = nil
+        if postScanCardView == nil {
+            backdropView.isUserInteractionEnabled = false
+        }
+        applyControlLayout()
+    }
+
+    private func showErrorCard(
+        title: String,
+        message: String,
+        primaryAction: ScanErrorPrimaryAction
+    ) {
+        DispatchQueue.main.async {
+            self.renderErrorCard(title: title, message: message, primaryAction: primaryAction)
+        }
+    }
+
+    private func renderErrorCard(
+        title: String,
+        message: String,
+        primaryAction: ScanErrorPrimaryAction
+    ) {
+        teardownErrorCard()
+        // Keep post-scan chrome available for Continue / retry-export; hide it under the error card.
+        switch primaryAction {
+        case .continue, .retryExport:
+            postScanCardView?.isHidden = true
+        case .tryAgain, .closeOnly:
+            teardownPostScanUI()
+        }
+
+        view.viewWithTag(887)?.removeFromSuperview()
+        finishButton.isHidden = true
+        isSessionRunning = false
+
+        let card = UIView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.backgroundColor = UIColor.black.withAlphaComponent(0.42)
+        card.layer.cornerRadius = 20
+        card.layer.masksToBounds = true
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor.white.withAlphaComponent(0.14).cgColor
+        errorCardView = card
+        view.addSubview(card)
+
+        let accent = UIView()
+        accent.translatesAutoresizingMaskIntoConstraints = false
+        accent.backgroundColor = UIColor.systemOrange
+        accent.layer.cornerRadius = 2
+        accent.layer.masksToBounds = true
+
+        let titleLabel = UILabel()
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = title
+        titleLabel.textColor = .white
+        titleLabel.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+        titleLabel.numberOfLines = 0
+
+        let helperLabel = UILabel()
+        helperLabel.translatesAutoresizingMaskIntoConstraints = false
+        helperLabel.text = message
+        helperLabel.textColor = UIColor.white.withAlphaComponent(0.88)
+        helperLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+        helperLabel.numberOfLines = 0
+
+        var arranged: [UIView] = [titleLabel, helperLabel]
+
+        switch primaryAction {
+        case .continue:
+            let continueButton = makePostScanActionButton(title: "Continue", isPrimary: true)
+            continueButton.addTarget(self, action: #selector(errorCardContinueTapped), for: .touchUpInside)
+            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
+            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
+            let stack = UIStackView(arrangedSubviews: [continueButton, closeButton])
+            stack.axis = .vertical
+            stack.spacing = 12
+            arranged.append(stack)
+        case .tryAgain:
+            let tryAgainButton = makePostScanActionButton(title: "Try Again", isPrimary: true)
+            tryAgainButton.addTarget(self, action: #selector(errorCardTryAgainTapped), for: .touchUpInside)
+            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
+            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
+            let stack = UIStackView(arrangedSubviews: [tryAgainButton, closeButton])
+            stack.axis = .vertical
+            stack.spacing = 12
+            arranged.append(stack)
+        case .retryExport:
+            let tryAgainButton = makePostScanActionButton(title: "Try Again", isPrimary: true)
+            tryAgainButton.addTarget(self, action: #selector(errorCardRetryExportTapped), for: .touchUpInside)
+            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
+            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
+            let stack = UIStackView(arrangedSubviews: [tryAgainButton, closeButton])
+            stack.axis = .vertical
+            stack.spacing = 12
+            arranged.append(stack)
+        case .closeOnly:
+            let closeButton = makePostScanActionButton(title: "Close", isPrimary: true)
+            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
+            arranged.append(closeButton)
+        }
+
+        let contentStack = UIStackView(arrangedSubviews: arranged)
+        contentStack.axis = .vertical
+        contentStack.spacing = 12
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.setCustomSpacing(16, after: helperLabel)
+        card.addSubview(accent)
+        card.addSubview(contentStack)
+
+        backdropTopToFinishConstraint.isActive = false
+        backdropTopToPostScanConstraint?.isActive = false
+        backdropTopToErrorCardConstraint = backdropView.topAnchor.constraint(
+            equalTo: card.topAnchor, constant: -12
+        )
+        backdropTopToErrorCardConstraint?.isActive = true
+        backdropView.isHidden = false
+        backdropView.isUserInteractionEnabled = true
+
+        cancelButton.isEnabled = true
+        applyCancelButtonChrome(emphasized: true)
+        cancelButton.alpha = 1
+
+        card.alpha = 0
+        card.transform = CGAffineTransform(translationX: 0, y: 24)
+        UIView.animate(
+            withDuration: 0.35,
+            delay: 0,
+            usingSpringWithDamping: 0.86,
+            initialSpringVelocity: 0.4,
+            options: .curveEaseOut
+        ) {
+            card.alpha = 1
+            card.transform = .identity
+        }
+
+        let cardTrailing: NSLayoutConstraint
+        if isTabletLayout {
+            cardTrailing = card.trailingAnchor.constraint(
+                equalTo: sideRailView.leadingAnchor, constant: -16
+            )
+        } else {
+            cardTrailing = card.trailingAnchor.constraint(
+                equalTo: view.trailingAnchor, constant: -16
+            )
+        }
+        errorCardTrailingConstraint = cardTrailing
+
+        NSLayoutConstraint.activate([
+            accent.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            accent.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
+            accent.widthAnchor.constraint(equalToConstant: 4),
+            accent.heightAnchor.constraint(equalToConstant: 22),
+
+            card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            cardTrailing,
+            card.bottomAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16
+            ),
+
+            contentStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 20),
+            contentStack.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 12),
+            contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
+        ])
+
+        applyControlLayout()
+    }
+
+    @objc private func errorCardContinueTapped() {
+        teardownErrorCard()
+        postScanCardView?.isHidden = false
+        if postScanCardView == nil {
+            setupPostScanUI()
+        } else {
+            backdropTopToPostScanConstraint?.isActive = true
+            backdropView.isUserInteractionEnabled = true
+            applyControlLayout()
+        }
+    }
+
+    @objc private func errorCardTryAgainTapped() {
+        // Clear export overlay if present
+        view.viewWithTag(999)?.removeFromSuperview()
+        teardownErrorCard()
+        restorePostScanActionButtons()
+        restartSession()
+    }
+
+    @objc private func errorCardRetryExportTapped() {
+        view.viewWithTag(999)?.removeFromSuperview()
+        teardownErrorCard()
+        restorePostScanActionButtons()
+        if postScanCardView == nil {
+            setupPostScanUI()
+        } else {
+            postScanCardView?.isHidden = false
+            backdropTopToPostScanConstraint?.isActive = true
+            backdropView.isUserInteractionEnabled = true
+            applyControlLayout()
+        }
+        // Re-attempt finish/export with the rooms we already have
+        superExportResults(exportButton as Any)
+    }
+
+    private func restorePostScanActionButtons() {
+        if exportButton != nil {
+            exportButton.isEnabled = true
+            exportButton.backgroundColor = UIColor.systemBlue
+            exportButton.removeTarget(nil, action: nil, for: .allEvents)
+            exportButton.addTarget(
+                self,
+                action: #selector(confirmFinishFloorPlan),
+                for: .touchUpInside
+            )
+        }
+        if anotherScanButton != nil {
+            anotherScanButton.isEnabled = true
+            anotherScanButton.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+            anotherScanButton.removeTarget(nil, action: nil, for: .allEvents)
+            anotherScanButton.addTarget(
+                self,
+                action: #selector(restartSession),
+                for: .touchUpInside
+            )
+        }
+        cancelButton.isEnabled = true
+        cancelButton.alpha = 1
+        cancelButton.removeTarget(nil, action: nil, for: .allEvents)
+        cancelButton.addTarget(self, action: #selector(cancelSession), for: .touchUpInside)
+        applyCancelButtonChrome(emphasized: true)
+    }
+
+    @objc private func errorCardCloseTapped() {
+        teardownErrorCard()
+        sendScanResultAndDismiss(
+            status: .Error,
+            errorMessage: lastDismissErrorMessage,
+            errorContext: lastDismissErrorContext ?? "captureError",
+            errorCode: lastDismissErrorCode
+        )
+    }
+
+    private func prepareScanningUIForCaptureFailure() {
+        DispatchQueue.main.async {
+            self.isSessionRunning = false
+            self.exportPendingAfterBuild = false
+            self.view.viewWithTag(887)?.removeFromSuperview()
+            self.finishButton.isHidden = true
+        }
     }
 
     @objc private func confirmFinishFloorPlan() {
@@ -838,13 +1189,25 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
             } catch {
                 print("[RoomPlan] ERROR MERGING: \(error)")
-                self.sendScanResultAndDismiss(status: .Error, errorMessage: error.localizedDescription, errorContext: "exportResults")
+                let message = error.localizedDescription
+                self.emitScanError(message: message, context: "exportResults", code: "exportFailed")
+                DispatchQueue.main.async {
+                    // Remove white export overlay so the error card is visible
+                    self.view.viewWithTag(999)?.removeFromSuperview()
+                    self.restorePostScanActionButtons()
+                    let hasRooms = !self.capturedRoomArray.isEmpty
+                    self.showErrorCard(
+                        title: "Couldn’t finish floor plan",
+                        message: "Something went wrong while combining your scans. \(hasRooms ? "Try again, or close and start over." : message)",
+                        primaryAction: hasRooms ? .retryExport : .closeOnly
+                    )
+                }
                 return
             }
         }
     }
 
-    func sendScanResultAndDismiss(status: ScanStatus? = nil, scanUrl: String? = nil, jsonUrl: String? = nil, errorMessage: String? = nil, errorContext: String? = nil) {
+    func sendScanResultAndDismiss(status: ScanStatus? = nil, scanUrl: String? = nil, jsonUrl: String? = nil, errorMessage: String? = nil, errorContext: String? = nil, errorCode: String? = nil) {
         var eventData: [String: Any] = [:]
 
         if let status = status {
@@ -865,6 +1228,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         if let errorContext = errorContext {
             eventData["errorContext"] = errorContext
+        }
+
+        if let errorCode = errorCode {
+            eventData["errorCode"] = errorCode
         }
         
         // Send the unified event
@@ -1029,6 +1396,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
         exportPendingAfterBuild = false
+        teardownErrorCard()
         teardownPostScanUI()
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
@@ -1138,18 +1506,65 @@ extension RoomPlanCaptureViewController {
         error: (any Error)?
     ) {
         print("[RoomPlan] didEndWith")
+
+        let captureCopy: ScanErrorCopy?
+        if let captureError = error as? RoomCaptureSession.CaptureError {
+            let copy = captureErrorCopy(from: captureError)
+            captureCopy = copy
+            emitScanError(message: copy.message, context: "captureError", code: copy.code)
+            prepareScanningUIForCaptureFailure()
+        } else if let error {
+            let message = error.localizedDescription
+            captureCopy = ScanErrorCopy(code: "unknown", title: "Scan interrupted", message: message)
+            emitScanError(message: message, context: "captureError", code: "unknown")
+            prepareScanningUIForCaptureFailure()
+        } else {
+            captureCopy = nil
+        }
+
         let roomBuilder = RoomBuilder(options: [.beautifyObjects])
         Task {
+            var builtRoom = false
             do {
                 let capturedRoom = try await roomBuilder.capturedRoom(from: didEndWith)
                 print("[RoomPlan] Appending new captured room")
                 self.capturedRoomArray.append(capturedRoom)
+                builtRoom = true
             } catch {
                 // Non-fatal: user stays in the scan UI and can try again.
-                // Forward the error to React for Sentry logging without dismissing.
                 print("[RoomPlan] Failed to build captured room: \(error)")
-                self.onScanError?(["errorMessage": error.localizedDescription, "errorContext": "roomBuilder"])
+                let message = error.localizedDescription
+                self.emitScanError(message: message, context: "roomBuilder", code: "roomBuilderFailed")
+                if captureCopy == nil {
+                    let hasPriorRooms = !self.capturedRoomArray.isEmpty
+                    self.showErrorCard(
+                        title: "Couldn’t process this room",
+                        message: "The scan finished, but the room model couldn’t be built. \(hasPriorRooms ? "You can continue with previous rooms or try again." : "Try scanning again.")",
+                        primaryAction: hasPriorRooms ? .continue : .tryAgain
+                    )
+                }
             }
+
+            // CaptureError: surface after attempting to keep partial results.
+            if let captureCopy {
+                let hasRooms = !self.capturedRoomArray.isEmpty || builtRoom
+                let primary: ScanErrorPrimaryAction
+                switch captureCopy.code {
+                case "deviceNotSupported":
+                    primary = .closeOnly
+                default:
+                    primary = hasRooms ? .continue : .tryAgain
+                }
+                self.showErrorCard(
+                    title: captureCopy.title,
+                    message: captureCopy.message,
+                    primaryAction: primary
+                )
+                // Don't auto-export when RoomPlan ended with a capture error.
+                self.exportPendingAfterBuild = false
+                return
+            }
+
             // If Done was tapped while the session was still running, export now that the
             // room is built rather than relying on the fixed 0.5s delay in superExportResults.
             if self.exportPendingAfterBuild {
