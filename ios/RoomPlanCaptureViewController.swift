@@ -19,6 +19,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     // Shown behind the instructions overlay; crossfades out when scanning starts.
     private var avSession: AVCaptureSession?
     private var avPreviewLayer: AVCaptureVideoPreviewLayer?
+    private var avCaptureDevice: AVCaptureDevice?
+    private var avRotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    private var avRotationObservation: NSKeyValueObservation?
 
     private var finalResults: CapturedRoom?
     private var finalStructure: CapturedStructure?
@@ -46,6 +49,25 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var backdropTopToFinishConstraint: NSLayoutConstraint!
     private var backdropTopToPostScanConstraint: NSLayoutConstraint?
 
+    /// Matches quick-camera `TABLET_RAIL_WIDTH` / `TABLET_MIN_DIMENSION`.
+    private let railWidth: CGFloat = 120
+    private let tabletMinDimension: CGFloat = 768
+    private let phoneFinishButtonSize: CGFloat = 72
+    private let tabletFinishButtonSize: CGFloat = 84
+
+    private var sideRailView: UIView!
+    private var sideRailWidthConstraint: NSLayoutConstraint!
+    private var phoneFinishConstraints: [NSLayoutConstraint] = []
+    private var tabletFinishConstraints: [NSLayoutConstraint] = []
+    private var finishButtonWidthConstraint: NSLayoutConstraint!
+    private var finishButtonHeightConstraint: NSLayoutConstraint!
+    private var backdropTrailingPhoneConstraint: NSLayoutConstraint!
+    private var backdropTrailingTabletConstraint: NSLayoutConstraint!
+    private var postScanCardTrailingConstraint: NSLayoutConstraint?
+    private var readyLabelBottomConstraint: NSLayoutConstraint?
+    private var readyLabelCenterYConstraint: NSLayoutConstraint?
+    private var readyInstructionLabel: UILabel?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -60,17 +82,26 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.addSubview(activityIndicator)
     }
 
-    // Backdrop is sized by Auto Layout to wrap its content; capture view is 4:3 over the full screen
-    // so controls can sit in the letterbox below (avoids side insets on iPad when the bar ate height).
+    // Backdrop is sized by Auto Layout to wrap its content (phone bottom chrome / post-scan).
     private var backdropView: UIVisualEffectView!
 
-    /// Full screen — do not clip to the frosted bar, or iPad portrait can't fit full-width 4:3.
-    private var availablePreviewRect: CGRect {
-        return view.bounds
+    private var isTabletLayout: Bool {
+        min(view.bounds.width, view.bounds.height) >= tabletMinDimension
     }
 
-    /// Fit a 4:3 rectangle inside `available`, top-aligned and horizontally centered.
+    /// Phone: full screen. iPad: main column left of the 120pt trailing rail (inside safe area).
+    private var availablePreviewRect: CGRect {
+        let bounds = view.bounds
+        guard isTabletLayout else { return bounds }
+
+        let insets = view.safeAreaInsets
+        let width = max(0, bounds.width - insets.left - insets.right - railWidth)
+        return CGRect(x: insets.left, y: 0, width: width, height: bounds.height)
+    }
+
+    /// Fit a 4:3 rectangle inside `available`.
     /// Portrait uses 3:4 (width:height); landscape uses 4:3.
+    /// Phone: top-aligned. iPad: centered in the main column (does not overlap the rail).
     private func previewFrame(in available: CGRect) -> CGRect {
         guard available.width > 0, available.height > 0 else { return .zero }
 
@@ -90,7 +121,12 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
 
         let x = available.minX + (available.width - size.width) / 2
-        let y = available.minY
+        let y: CGFloat
+        if isTabletLayout {
+            y = available.minY + (available.height - size.height) / 2
+        } else {
+            y = available.minY
+        }
         return CGRect(origin: CGPoint(x: x, y: y), size: size)
     }
 
@@ -98,10 +134,32 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         let frame = previewFrame(in: availablePreviewRect)
         roomCaptureView.frame = frame
         avPreviewLayer?.frame = frame
+        applyAVPreviewRotation()
+    }
+
+    /// Allow iPad landscape so RoomPlan / AV preview can follow the interface.
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return .all
+        }
+        return .allButUpsideDown
+    }
+
+    override var shouldAutorotate: Bool { true }
+
+    override func viewWillTransition(
+        to size: CGSize,
+        with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { _ in
+            self.applyControlLayout()
+            self.layoutCameraSurfaces()
+        })
     }
 
     private func setupRoomCaptureView() {
-        // Temporary frame — sized to 4:3 above the backdrop in viewDidLayoutSubviews.
+        // Temporary frame — sized to 4:3 in viewDidLayoutSubviews.
         roomCaptureView = RoomCaptureView(frame: view.bounds)
         roomCaptureView?.captureSession.delegate = self
         // Hide until scanning starts so the AV warm-up preview shows through underneath
@@ -110,10 +168,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         setupButtons()
         setupConstraints()
+        applyControlLayout()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+
+        applyControlLayout()
 
         // Keep the ring layer sized to the button bounds
         if let ring = finishButton.layer.sublayers?.first(where: { $0.name == "recordRing" }) as? CAShapeLayer {
@@ -127,12 +188,12 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setupButtons() {
-        // Record/stop button — large circular red button at the bottom centre
+        // Record/stop button — phone: bottom centre; iPad: right rail (quick camera style)
         finishButton = UIButton()
         finishButton.translatesAutoresizingMaskIntoConstraints = false
         finishButton.backgroundColor = UIColor.systemRed
         finishButton.layer.masksToBounds = true
-        finishButton.layer.cornerRadius = 36  // half of 72pt → circle
+        finishButton.layer.cornerRadius = phoneFinishButtonSize / 2
 
         // Record circle icon — shown before scanning starts
         let recordConfig = UIImage.SymbolConfiguration(pointSize: 32, weight: .bold)
@@ -150,15 +211,26 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         finishButton.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
 
-        // Frosted backdrop — height driven by content via Auto Layout
+        // Frosted backdrop — height driven by content via Auto Layout (phone / post-scan)
         backdropView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
         backdropView.translatesAutoresizingMaskIntoConstraints = false
         backdropView.isUserInteractionEnabled = false
         view.addSubview(backdropView)
 
+        // iPad right rail (matches quick-camera tabletSideRail look)
+        sideRailView = UIView()
+        sideRailView.translatesAutoresizingMaskIntoConstraints = false
+        sideRailView.backgroundColor = UIColor.white.withAlphaComponent(0.04)
+        sideRailView.isHidden = true
+        let railBorder = CALayer()
+        railBorder.name = "railBorder"
+        railBorder.backgroundColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        sideRailView.layer.addSublayer(railBorder)
+        view.addSubview(sideRailView)
+
         view.addSubview(finishButton)
 
-        // Cancel button — top left, text only
+        // Cancel button — top left of main column, text only
         cancelButton = UIButton()
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.setTitleColor(.white, for: .normal)
@@ -179,23 +251,49 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         backdropTopToFinishConstraint = backdropView.topAnchor.constraint(
             equalTo: finishButton.topAnchor, constant: -20
         )
+        backdropTrailingPhoneConstraint = backdropView.trailingAnchor.constraint(
+            equalTo: view.trailingAnchor
+        )
+        backdropTrailingTabletConstraint = backdropView.trailingAnchor.constraint(
+            equalTo: sideRailView.leadingAnchor
+        )
 
-        NSLayoutConstraint.activate([
-            // Frosted backdrop — spans full width, anchored to bottom, top driven by button
-            backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backdropView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            backdropTopToFinishConstraint,
+        finishButtonWidthConstraint = finishButton.widthAnchor.constraint(
+            equalToConstant: phoneFinishButtonSize
+        )
+        finishButtonHeightConstraint = finishButton.heightAnchor.constraint(
+            equalToConstant: phoneFinishButtonSize
+        )
+        sideRailWidthConstraint = sideRailView.widthAnchor.constraint(equalToConstant: 0)
 
-            // Record button — centred, 20pt above safe area bottom
+        phoneFinishConstraints = [
             finishButton.bottomAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20
             ),
             finishButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            finishButton.widthAnchor.constraint(equalToConstant: 72),
-            finishButton.heightAnchor.constraint(equalToConstant: 72),
+        ]
 
-            // Cancel button — top left
+        tabletFinishConstraints = [
+            finishButton.centerXAnchor.constraint(equalTo: sideRailView.centerXAnchor),
+            finishButton.centerYAnchor.constraint(equalTo: sideRailView.centerYAnchor),
+        ]
+
+        NSLayoutConstraint.activate([
+            backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backdropTrailingPhoneConstraint,
+
+            sideRailView.topAnchor.constraint(equalTo: view.topAnchor),
+            sideRailView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sideRailView.trailingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.trailingAnchor
+            ),
+            sideRailWidthConstraint,
+
+            finishButtonWidthConstraint,
+            finishButtonHeightConstraint,
+
+            // Cancel button — top left of main column
             cancelButton.topAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10
             ),
@@ -204,6 +302,73 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             ),
             cancelButton.heightAnchor.constraint(equalToConstant: 30),
         ])
+    }
+
+    /// Swap phone bottom chrome vs iPad right rail; hide frosted bar on iPad while scanning.
+    private func applyControlLayout() {
+        let tablet = isTabletLayout
+        let isPostScan = postScanCardView != nil
+
+        sideRailView.isHidden = !tablet
+        sideRailView.isUserInteractionEnabled = tablet
+        sideRailWidthConstraint.constant = tablet ? railWidth : 0
+
+        // Hairline on the rail's leading edge
+        if tablet, let border = sideRailView.layer.sublayers?.first(where: { $0.name == "railBorder" }) {
+            let scale = view.window?.screen.scale ?? UIScreen.main.scale
+            border.frame = CGRect(x: 0, y: 0, width: 1.0 / scale, height: sideRailView.bounds.height)
+        }
+
+        NSLayoutConstraint.deactivate(phoneFinishConstraints)
+        NSLayoutConstraint.deactivate(tabletFinishConstraints)
+
+        if tablet {
+            NSLayoutConstraint.activate(tabletFinishConstraints)
+            finishButtonWidthConstraint.constant = tabletFinishButtonSize
+            finishButtonHeightConstraint.constant = tabletFinishButtonSize
+            finishButton.layer.cornerRadius = tabletFinishButtonSize / 2
+
+            backdropTrailingPhoneConstraint.isActive = false
+            backdropTrailingTabletConstraint.isActive = true
+            // No bottom frosted chrome during scan on iPad
+            backdropView.isHidden = !isPostScan
+            if !isPostScan {
+                backdropTopToFinishConstraint.isActive = false
+            }
+        } else {
+            NSLayoutConstraint.activate(phoneFinishConstraints)
+            finishButtonWidthConstraint.constant = phoneFinishButtonSize
+            finishButtonHeightConstraint.constant = phoneFinishButtonSize
+            finishButton.layer.cornerRadius = phoneFinishButtonSize / 2
+
+            backdropTrailingTabletConstraint.isActive = false
+            backdropTrailingPhoneConstraint.isActive = true
+            backdropView.isHidden = false
+            if !isPostScan {
+                backdropTopToFinishConstraint.isActive = true
+            }
+        }
+
+        updateReadyOverlayForLayout(isTablet: tablet)
+
+        if tablet {
+            view.bringSubviewToFront(sideRailView)
+        }
+        view.bringSubviewToFront(finishButton)
+        view.bringSubviewToFront(cancelButton)
+        if let card = postScanCardView {
+            view.bringSubviewToFront(card)
+            view.bringSubviewToFront(cancelButton)
+        }
+    }
+
+    private func updateReadyOverlayForLayout(isTablet: Bool) {
+        guard let label = readyInstructionLabel else { return }
+        label.text = isTablet
+            ? "Tap the button on the right to start scanning"
+            : "Tap the button below to start scanning"
+        readyLabelBottomConstraint?.isActive = !isTablet
+        readyLabelCenterYConstraint?.isActive = isTablet
     }
 
     private func makePostScanActionButton(
@@ -303,6 +468,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             equalTo: card.topAnchor, constant: -12
         )
         backdropTopToPostScanConstraint?.isActive = true
+        backdropView.isHidden = false
         backdropView.isUserInteractionEnabled = true
 
         UIView.transition(
@@ -329,9 +495,21 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             card.transform = .identity
         }
 
+        let cardTrailing: NSLayoutConstraint
+        if isTabletLayout {
+            cardTrailing = card.trailingAnchor.constraint(
+                equalTo: sideRailView.leadingAnchor, constant: -16
+            )
+        } else {
+            cardTrailing = card.trailingAnchor.constraint(
+                equalTo: view.trailingAnchor, constant: -16
+            )
+        }
+        postScanCardTrailingConstraint = cardTrailing
+
         NSLayoutConstraint.activate([
             card.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            cardTrailing,
             card.bottomAnchor.constraint(
                 equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16
             ),
@@ -341,15 +519,18 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             contentStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
             contentStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
         ])
+
+        applyControlLayout()
     }
 
     private func teardownPostScanUI() {
         postScanCardView?.removeFromSuperview()
         postScanCardView = nil
+        postScanCardTrailingConstraint = nil
         backdropTopToPostScanConstraint?.isActive = false
         backdropTopToPostScanConstraint = nil
-        backdropTopToFinishConstraint.isActive = true
         backdropView.isUserInteractionEnabled = false
+        applyControlLayout()
     }
 
     @objc private func confirmFinishFloorPlan() {
@@ -404,14 +585,59 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         avSession = session
         avPreviewLayer = previewLayer
+        avCaptureDevice = device
+
+        // Keep the warm-up preview level with gravity across portrait/landscape (iPad).
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        avRotationCoordinator = coordinator
+        avRotationObservation = coordinator.observe(
+            \.videoRotationAngleForHorizonLevelPreview,
+            options: [.initial, .new]
+        ) { [weak self] coord, _ in
+            self?.applyAVPreviewRotation(angle: coord.videoRotationAngleForHorizonLevelPreview)
+        }
+        applyAVPreviewRotation()
 
         // Start on a background thread so we don't block the main thread
         DispatchQueue.global(qos: .userInitiated).async {
             session.startRunning()
+            DispatchQueue.main.async {
+                self.applyAVPreviewRotation()
+            }
+        }
+    }
+
+    private func applyAVPreviewRotation(angle: CGFloat? = nil) {
+        guard let connection = avPreviewLayer?.connection else { return }
+        let rotation =
+            angle
+            ?? avRotationCoordinator?.videoRotationAngleForHorizonLevelPreview
+            ?? videoRotationAngleForInterfaceOrientation()
+        guard connection.isVideoRotationAngleSupported(rotation) else { return }
+        connection.videoRotationAngle = rotation
+    }
+
+    private func videoRotationAngleForInterfaceOrientation() -> CGFloat {
+        let orientation =
+            view.window?.windowScene?.interfaceOrientation
+            ?? UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.interfaceOrientation
+            ?? .portrait
+        switch orientation {
+        case .portrait: return 90
+        case .portraitUpsideDown: return 270
+        case .landscapeRight: return 180
+        case .landscapeLeft: return 0
+        default: return 90
         }
     }
 
     private func stopAVPreview() {
+        avRotationObservation?.invalidate()
+        avRotationObservation = nil
+        avRotationCoordinator = nil
+        avCaptureDevice = nil
         avPreviewLayer?.removeFromSuperlayer()
         avPreviewLayer = nil
         let session = avSession
@@ -611,24 +837,46 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         let label = UILabel()
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.text = "Tap the button below to start scanning"
         label.textColor = .white
         label.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
         label.textAlignment = .center
         label.numberOfLines = 0
         overlay.addSubview(label)
+        readyInstructionLabel = label
 
-        NSLayoutConstraint.activate([
+        let bottomConstraint = label.bottomAnchor.constraint(
+            equalTo: overlay.bottomAnchor, constant: -140
+        )
+        let centerYConstraint = label.centerYAnchor.constraint(equalTo: overlay.centerYAnchor)
+        readyLabelBottomConstraint = bottomConstraint
+        readyLabelCenterYConstraint = centerYConstraint
+
+        let tablet = isTabletLayout
+        label.text = tablet
+            ? "Tap the button on the right to start scanning"
+            : "Tap the button below to start scanning"
+
+        var constraints: [NSLayoutConstraint] = [
             overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             overlay.topAnchor.constraint(equalTo: view.topAnchor),
             overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-            label.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -140),
             label.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 32),
             label.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -32),
-        ])
+            tablet ? centerYConstraint : bottomConstraint,
+        ]
+        if tablet {
+            // Keep the right rail undimmed and tappable
+            constraints.append(
+                overlay.trailingAnchor.constraint(equalTo: sideRailView.leadingAnchor)
+            )
+        } else {
+            constraints.append(
+                overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            )
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     public func startSession() {
@@ -641,6 +889,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 overlay.removeFromSuperview()
             })
         }
+        readyInstructionLabel = nil
+        readyLabelBottomConstraint = nil
+        readyLabelCenterYConstraint = nil
         isSessionRunning = true
         setFinishButtonToRecording()
         showScanningHint()
@@ -690,12 +941,27 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         hint.isUserInteractionEnabled = false
         view.insertSubview(hint, belowSubview: finishButton)
 
-        NSLayoutConstraint.activate([
-            hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            hint.bottomAnchor.constraint(equalTo: finishButton.topAnchor, constant: -20),
-            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
-            hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
-        ])
+        let tablet = isTabletLayout
+        if tablet {
+            NSLayoutConstraint.activate([
+                hint.leadingAnchor.constraint(
+                    equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 32
+                ),
+                hint.trailingAnchor.constraint(
+                    equalTo: sideRailView.leadingAnchor, constant: -16
+                ),
+                hint.bottomAnchor.constraint(
+                    equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -24
+                ),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                hint.bottomAnchor.constraint(equalTo: finishButton.topAnchor, constant: -20),
+                hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+                hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+            ])
+        }
     }
 
     @IBAction func restartSession() {
