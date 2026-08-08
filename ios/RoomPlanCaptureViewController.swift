@@ -103,14 +103,24 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         min(view.bounds.width, view.bounds.height) >= tabletMinDimension
     }
 
-    /// Phone: full screen. iPad: main column left of the 120pt trailing rail (inside safe area).
+    /// Phone: top safe area only (match quick camera `SafeAreaView edges={['top']}`).
+    /// iPad: all safe-area edges; main column left of the 120pt trailing rail.
     private var availablePreviewRect: CGRect {
         let bounds = view.bounds
-        guard isTabletLayout else { return bounds }
-
         let insets = view.safeAreaInsets
+
+        if !isTabletLayout {
+            return CGRect(
+                x: 0,
+                y: insets.top,
+                width: bounds.width,
+                height: max(0, bounds.height - insets.top)
+            )
+        }
+
         let width = max(0, bounds.width - insets.left - insets.right - railWidth)
-        return CGRect(x: insets.left, y: 0, width: width, height: bounds.height)
+        let height = max(0, bounds.height - insets.top - insets.bottom)
+        return CGRect(x: insets.left, y: insets.top, width: width, height: height)
     }
 
     /// Fit a 4:3 rectangle inside `available`.
