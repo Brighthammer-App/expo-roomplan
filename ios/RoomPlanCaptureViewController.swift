@@ -1456,19 +1456,29 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     @IBAction func restartSession() {
-        print("[RoomPlan] restarting session")
+        // Return to Ready UI so the user can reposition before the next pass.
+        // Do not call captureSession.run or restart AV preview — RoomPlan may still
+        // hold the camera after stop(pauseARSession: false); bringing AV back risks
+        // freezes. Keep roomCaptureView as the backdrop; Start calls startSession().
+        print("[RoomPlan] returning to ready for next room")
         exportPendingAfterBuild = false
         teardownErrorCard()
         teardownPostScanUI()
-        roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
-        isSessionRunning = true
-        isReadyToStart = false
-        // Restore the record button
-        setFinishButtonToRecording()
+
+        if isSessionRunning {
+            roomCaptureView?.captureSession.stop(pauseARSession: false)
+        }
+
+        isSessionRunning = false
+        isReadyToStart = true
+        roomCaptureView?.alpha = 1
+
+        setFinishButtonToIdle()
         finishButton.isHidden = false
         cancelButton.isEnabled = true
-        applyCancelButtonChrome(emphasized: false)
+        applyControlLayout()
         updateCancelButtonVisibility(animated: true)
+        updateReadyStatusVisibility(animated: true)
     }
 
     @objc
