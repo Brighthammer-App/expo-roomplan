@@ -10,16 +10,28 @@ export default function useRoomPlan(params) {
     useEffect(() => {
         const dismissSub = ExpoRoomPlan.addListener?.("onDismissEvent", (event) => {
             setRoomScanStatus(event.status);
-            if (event.scanUrl) setScanUrl(event.scanUrl);
-            if (event.jsonUrl) setJsonUrl(event.jsonUrl);
+            if (event.scanUrl)
+                setScanUrl(event.scanUrl);
+            if (event.jsonUrl)
+                setJsonUrl(event.jsonUrl);
             if (event.errorMessage) {
-                setNativeError({ message: event.errorMessage, context: event.errorContext ?? "unknown" });
-            } else {
+                setNativeError({
+                    message: event.errorMessage,
+                    context: event.errorContext ?? "unknown",
+                    code: event.errorCode,
+                });
+            }
+            else if (event.status !== ScanStatus.Error) {
                 setNativeError(null);
             }
         });
+        // Mid-session errors (capture / room builder) — user may stay in scan UI
         const errorSub = ExpoRoomPlan.addListener?.("onScanError", (event) => {
-            setNativeError({ message: event.errorMessage, context: event.errorContext ?? "unknown" });
+            setNativeError({
+                message: event.errorMessage,
+                context: event.errorContext ?? "unknown",
+                code: event.errorCode,
+            });
         });
         return () => {
             dismissSub?.remove();
@@ -30,14 +42,11 @@ export default function useRoomPlan(params) {
         if (Platform.OS === "android") {
             throw new Error("RoomPlan SDK only available on iOS.");
         }
-        try {
-            const exportType = params?.exportType ?? ExportType.Parametric;
-            const sendFileLoc = params?.sendFileLoc ?? false;
-            ExpoRoomPlan.startCapture(scanName, exportType, sendFileLoc);
-        }
-        catch (err) {
-            throw err;
-        }
+        // ExportType: defaults internally to 'parametric'
+        // Model file location is not returned by default.
+        const exportType = params?.exportType ?? ExportType.Parametric;
+        const sendFileLoc = params?.sendFileLoc ?? false;
+        ExpoRoomPlan.startCapture(scanName, exportType, sendFileLoc);
     };
     return {
         startRoomPlan,

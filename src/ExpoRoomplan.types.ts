@@ -29,6 +29,6 @@ export interface UseRoomPlanInterface {
   roomScanStatus: ScanStatus;
   jsonUrl: string | null;
   scanUrl: string | null;
-  /** Native error message forwarded from Swift when status is Error */
-  nativeError: { message: string; context: string } | null;
+  /** Native error forwarded from Swift (capture / builder / export failures) */
+  nativeError: { message: string; context: string; code?: string } | null;
 }
