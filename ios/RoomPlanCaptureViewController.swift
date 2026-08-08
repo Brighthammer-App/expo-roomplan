@@ -665,7 +665,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         let helperLabel = UILabel()
         helperLabel.translatesAutoresizingMaskIntoConstraints = false
         helperLabel.text =
-            "Scan another room to add it to this floor plan, or finish to create the final floor plan."
+            "One room captured. Scan another, or finish the floor plan."
         helperLabel.textColor = UIColor.white.withAlphaComponent(0.88)
         helperLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         helperLabel.numberOfLines = 0
@@ -890,7 +890,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             teardownPostScanUI()
         }
 
-        view.viewWithTag(887)?.removeFromSuperview()
         finishButton.isHidden = true
         isSessionRunning = false
 
@@ -1108,7 +1107,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         DispatchQueue.main.async {
             self.isSessionRunning = false
             self.exportPendingAfterBuild = false
-            self.view.viewWithTag(887)?.removeFromSuperview()
             self.finishButton.isHidden = true
         }
     }
@@ -1427,7 +1425,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         isReadyToStart = false
         isSessionRunning = true
         setFinishButtonToRecording()
-        showScanningHint()
         updateCancelButtonVisibility(animated: true)
         updateReadyStatusVisibility(animated: true)
 
@@ -1458,47 +1455,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
     }
 
-    private func showScanningHint() {
-        // Remove any existing hint first
-        view.viewWithTag(887)?.removeFromSuperview()
-
-        let hint = UILabel()
-        hint.translatesAutoresizingMaskIntoConstraints = false
-        hint.tag = 887
-        hint.text = "Scan one room/area, then tap stop."
-        hint.textColor = .white
-        hint.font = UIFont.systemFont(ofSize: 15, weight: .medium)
-        hint.textAlignment = .center
-        hint.numberOfLines = 0
-        hint.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-        hint.layer.cornerRadius = 10
-        hint.layer.masksToBounds = true
-        hint.isUserInteractionEnabled = false
-        view.insertSubview(hint, belowSubview: finishButton)
-
-        let tablet = isTabletLayout
-        if tablet {
-            NSLayoutConstraint.activate([
-                hint.leadingAnchor.constraint(
-                    equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 32
-                ),
-                hint.trailingAnchor.constraint(
-                    equalTo: sideRailView.leadingAnchor, constant: -16
-                ),
-                hint.bottomAnchor.constraint(
-                    equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -24
-                ),
-            ])
-        } else {
-            NSLayoutConstraint.activate([
-                hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                hint.bottomAnchor.constraint(equalTo: finishButton.topAnchor, constant: -20),
-                hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
-                hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
-            ])
-        }
-    }
-
     @IBAction func restartSession() {
         print("[RoomPlan] restarting session")
         exportPendingAfterBuild = false
@@ -1510,7 +1466,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // Restore the record button
         setFinishButtonToRecording()
         finishButton.isHidden = false
-        showScanningHint()
         cancelButton.isEnabled = true
         applyCancelButtonChrome(emphasized: false)
         updateCancelButtonVisibility(animated: true)
@@ -1520,8 +1475,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     public func stopSession() {
         roomCaptureView?.captureSession.stop(pauseARSession: false)
         isSessionRunning = false
-        // Remove scanning hint
-        view.viewWithTag(887)?.removeFromSuperview()
         // Hide the record button — post-scan UI has its own actions
         finishButton.isHidden = true
         // Show Cancel immediately (no fade race with post-scan layout).
