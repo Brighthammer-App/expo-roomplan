@@ -74,6 +74,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var phoneCancelConstraints: [NSLayoutConstraint] = []
     private var tabletCancelConstraints: [NSLayoutConstraint] = []
     private var cancelTopLeftConstraints: [NSLayoutConstraint] = []
+    private var phoneReadyStatusConstraints: [NSLayoutConstraint] = []
+    private var tabletReadyStatusConstraints: [NSLayoutConstraint] = []
     private var finishButtonWidthConstraint: NSLayoutConstraint!
     private var finishButtonHeightConstraint: NSLayoutConstraint!
     private var finishButtonInnerView: UIView!
@@ -83,6 +85,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var backdropTrailingPhoneConstraint: NSLayoutConstraint!
     private var backdropTrailingTabletConstraint: NSLayoutConstraint!
     private var postScanCardTrailingConstraint: NSLayoutConstraint?
+    private var readyStatusLabel: UILabel!
     /// True until the user taps start — drives finish-button start vs stop behavior.
     private var isReadyToStart: Bool = true
 
@@ -297,6 +300,61 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         applyCancelButtonChrome(emphasized: false)
         cancelButton.addTarget(self, action: #selector(cancelSession), for: .touchUpInside)
         view.addSubview(cancelButton)
+
+        // Ready status — calm status line above the shutter (no dim overlay)
+        readyStatusLabel = UILabel()
+        readyStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        readyStatusLabel.textAlignment = .center
+        readyStatusLabel.numberOfLines = 1
+        readyStatusLabel.isUserInteractionEnabled = false
+        readyStatusLabel.alpha = 0
+        readyStatusLabel.layer.shadowColor = UIColor.black.cgColor
+        readyStatusLabel.layer.shadowOpacity = 0.4
+        readyStatusLabel.layer.shadowRadius = 10
+        readyStatusLabel.layer.shadowOffset = CGSize(width: 0, height: 1)
+        applyReadyStatusTypography()
+        view.addSubview(readyStatusLabel)
+    }
+
+    private func applyReadyStatusTypography() {
+        let size: CGFloat = 20
+        let base = UIFont.systemFont(ofSize: size, weight: .semibold)
+        let font: UIFont
+        if let rounded = base.fontDescriptor.withDesign(.rounded) {
+            font = UIFont(descriptor: rounded, size: size)
+        } else {
+            font = base
+        }
+        readyStatusLabel.attributedText = NSAttributedString(
+            string: "Ready to scan",
+            attributes: [
+                .font: font,
+                .foregroundColor: UIColor.white.withAlphaComponent(0.92),
+                .kern: 0.6,
+            ]
+        )
+    }
+
+    /// Show only on the pre-scan ready screen.
+    private func updateReadyStatusVisibility(animated: Bool = false) {
+        let show =
+            isReadyToStart
+            && !isSessionRunning
+            && postScanCardView == nil
+            && errorCardView == nil
+        let updates = {
+            self.readyStatusLabel.alpha = show ? 1 : 0
+        }
+        if animated {
+            UIView.animate(
+                withDuration: 0.4,
+                delay: show ? 0.05 : 0,
+                options: [.curveEaseOut],
+                animations: updates
+            )
+        } else {
+            updates()
+        }
     }
 
     /// Frosted pill chrome inspired by quick-camera Done (`rgba(255,255,255,0.12)` + hairline).
@@ -380,10 +438,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             finishButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
         ]
 
-        // iPad: match quick-camera rail (`paddingTop: 24` + vertically centered stack).
-        // Asymmetric top padding shifts the visual center ~12pt below mid-rail.
+        // iPad: pin shutter to true mid-rail (matches quick-camera absolute centerY).
         tabletFinishCenterYConstraint = finishButton.centerYAnchor.constraint(
-            equalTo: sideRailView.centerYAnchor, constant: 12
+            equalTo: sideRailView.centerYAnchor, constant: 0
         )
         tabletFinishConstraints = [
             finishButton.centerXAnchor.constraint(equalTo: sideRailView.centerXAnchor),
@@ -421,6 +478,31 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
             ),
             cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ]
+
+        // Ready status: phone above shutter; tablet centered in main column
+        phoneReadyStatusConstraints = [
+            readyStatusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            readyStatusLabel.bottomAnchor.constraint(
+                equalTo: finishButton.topAnchor, constant: -28
+            ),
+            readyStatusLabel.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.leadingAnchor, constant: 32
+            ),
+            readyStatusLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.trailingAnchor, constant: -32
+            ),
+        ]
+        tabletReadyStatusConstraints = [
+            readyStatusLabel.centerYAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.centerYAnchor
+            ),
+            readyStatusLabel.leadingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 32
+            ),
+            readyStatusLabel.trailingAnchor.constraint(
+                equalTo: sideRailView.leadingAnchor, constant: -16
+            ),
         ]
 
         NSLayoutConstraint.activate([
@@ -462,6 +544,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         NSLayoutConstraint.deactivate(phoneCancelConstraints)
         NSLayoutConstraint.deactivate(tabletCancelConstraints)
         NSLayoutConstraint.deactivate(cancelTopLeftConstraints)
+        NSLayoutConstraint.deactivate(phoneReadyStatusConstraints)
+        NSLayoutConstraint.deactivate(tabletReadyStatusConstraints)
 
         if tablet {
             NSLayoutConstraint.activate(tabletFinishConstraints)
@@ -500,18 +584,26 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             NSLayoutConstraint.activate(phoneCancelConstraints)
         }
 
+        if tablet {
+            NSLayoutConstraint.activate(tabletReadyStatusConstraints)
+        } else {
+            NSLayoutConstraint.activate(phoneReadyStatusConstraints)
+        }
+
         applyFinishButtonAppearance(animated: false)
         applyCancelButtonChrome(
             emphasized: showBottomChrome,
             railStyle: tablet && !showBottomChrome
         )
         updateCancelButtonVisibility(animated: false)
+        updateReadyStatusVisibility(animated: false)
 
         if tablet {
             view.bringSubviewToFront(sideRailView)
         }
         view.bringSubviewToFront(finishButton)
         view.bringSubviewToFront(cancelButton)
+        view.bringSubviewToFront(readyStatusLabel)
         if let card = postScanCardView {
             view.bringSubviewToFront(card)
             view.bringSubviewToFront(cancelButton)
@@ -1044,6 +1136,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         startAVPreview()
+        updateReadyStatusVisibility(animated: true)
     }
 
     override func viewWillDisappear(_ flag: Bool) {
@@ -1336,6 +1429,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         setFinishButtonToRecording()
         showScanningHint()
         updateCancelButtonVisibility(animated: true)
+        updateReadyStatusVisibility(animated: true)
 
         // Stop the AV preview and hand the camera off to RoomPlan.
         // We stop on a background thread then call run() on main once it's done —
