@@ -16,7 +16,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var isSessionRunning: Bool = false
 
     // AV preview — warms up the camera hardware before RoomPlan takes over.
-    // Shown behind the instructions overlay; crossfades out when scanning starts.
+    // Crossfades out when scanning starts.
     private var avSession: AVCaptureSession?
     private var avPreviewLayer: AVCaptureVideoPreviewLayer?
     private var avCaptureDevice: AVCaptureDevice?
@@ -62,6 +62,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private let tabletFinishButtonSize: CGFloat = 84
     private let shutterBorderWidth: CGFloat = 4
     private let shutterRed = UIColor(red: 1, green: 59.0 / 255.0, blue: 48.0 / 255.0, alpha: 1)
+    /// Quick camera `captureModeToggleWrap`: marginTop 12 + minHeight 44
+    private let phoneShutterBelowChrome: CGFloat = 56
 
     private var sideRailView: UIView!
     private var sideRailWidthConstraint: NSLayoutConstraint!
@@ -69,6 +71,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var phoneFinishBottomConstraint: NSLayoutConstraint!
     private var tabletFinishConstraints: [NSLayoutConstraint] = []
     private var tabletFinishCenterYConstraint: NSLayoutConstraint!
+    private var phoneCancelConstraints: [NSLayoutConstraint] = []
+    private var tabletCancelConstraints: [NSLayoutConstraint] = []
+    private var cancelTopLeftConstraints: [NSLayoutConstraint] = []
     private var finishButtonWidthConstraint: NSLayoutConstraint!
     private var finishButtonHeightConstraint: NSLayoutConstraint!
     private var finishButtonInnerView: UIView!
@@ -78,9 +83,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var backdropTrailingPhoneConstraint: NSLayoutConstraint!
     private var backdropTrailingTabletConstraint: NSLayoutConstraint!
     private var postScanCardTrailingConstraint: NSLayoutConstraint?
-    private var readyLabelBottomConstraint: NSLayoutConstraint?
-    private var readyLabelCenterYConstraint: NSLayoutConstraint?
-    private var readyInstructionLabel: UILabel?
+    /// True until the user taps start — drives finish-button start vs stop behavior.
+    private var isReadyToStart: Bool = true
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -96,8 +100,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.addSubview(activityIndicator)
     }
 
-    // Backdrop is sized by Auto Layout to wrap its content (phone bottom chrome / post-scan).
-    private var backdropView: UIVisualEffectView!
+    // Solid black chrome sized by Auto Layout (phone bottom bar / post-scan) — matches quick camera.
+    private var backdropView: UIView!
 
     private var isTabletLayout: Bool {
         min(view.bounds.width, view.bounds.height) >= tabletMinDimension
@@ -267,8 +271,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         finishButton.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
 
-        // Frosted backdrop — height driven by content via Auto Layout (phone / post-scan)
-        backdropView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        // Solid black chrome — height driven by content via Auto Layout (phone / post-scan)
+        backdropView = UIView()
+        backdropView.backgroundColor = .black
         backdropView.translatesAutoresizingMaskIntoConstraints = false
         backdropView.isUserInteractionEnabled = false
         view.addSubview(backdropView)
@@ -295,24 +300,56 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     /// Frosted pill chrome inspired by quick-camera Done (`rgba(255,255,255,0.12)` + hairline).
-    private func applyCancelButtonChrome(emphasized: Bool) {
+    /// Emphasized (post-scan / error): dark pill so it stays readable on RoomPlan's light mesh.
+    private func applyCancelButtonChrome(emphasized: Bool, railStyle: Bool = false) {
         var config = UIButton.Configuration.plain()
         config.title = "Cancel"
         config.baseForegroundColor = UIColor.white.withAlphaComponent(0.96)
-        config.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 20, bottom: 11, trailing: 20)
+        // Rail (tablet ready): tighter insets like `doneButtonRail`. Top-left / phone: Done padding.
+        let horizontal: CGFloat = railStyle ? 16 : 20
+        config.contentInsets = NSDirectionalEdgeInsets(
+            top: 11, leading: horizontal, bottom: 11, trailing: horizontal
+        )
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             outgoing.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
             outgoing.kern = 0.35
             return outgoing
         }
-        config.background.backgroundColor = UIColor.white.withAlphaComponent(emphasized ? 0.18 : 0.12)
+        if emphasized {
+            // Dark fill — RoomCaptureView often shows a near-white mesh after stop.
+            config.background.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+            config.background.strokeColor = UIColor.white.withAlphaComponent(0.4)
+        } else {
+            config.background.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+            config.background.strokeColor = UIColor.white.withAlphaComponent(0.32)
+        }
         config.background.cornerRadius = 22
         let scale = view.window?.screen.scale ?? UIScreen.main.scale
         config.background.strokeWidth = 1.0 / scale
-        config.background.strokeColor = UIColor.white.withAlphaComponent(0.32)
         cancelButton.configuration = config
-        cancelButton.alpha = cancelButton.isEnabled ? 1.0 : 0.4
+        if !isSessionRunning {
+            cancelButton.alpha = cancelButton.isEnabled ? 1.0 : 0.4
+        }
+    }
+
+    /// Hide Cancel while scanning (mirrors quick-camera Done during recording).
+    private func updateCancelButtonVisibility(animated: Bool = false) {
+        let shouldHide = isSessionRunning
+        let updates = {
+            if shouldHide {
+                self.cancelButton.alpha = 0
+                self.cancelButton.isUserInteractionEnabled = false
+            } else {
+                self.cancelButton.alpha = self.cancelButton.isEnabled ? 1.0 : 0.4
+                self.cancelButton.isUserInteractionEnabled = self.cancelButton.isEnabled
+            }
+        }
+        if animated {
+            UIView.animate(withDuration: 0.2, animations: updates)
+        } else {
+            updates()
+        }
     }
 
     private func setupConstraints() {
@@ -334,7 +371,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         sideRailWidthConstraint = sideRailView.widthAnchor.constraint(equalToConstant: 0)
 
-        // Phone: match quick camera `paddingBottom: Math.max(insets.bottom, 12) + 8`
+        // Phone: match quick camera shutter Y (toggle row reserve + paddingBottom)
         phoneFinishBottomConstraint = finishButton.bottomAnchor.constraint(
             equalTo: view.bottomAnchor, constant: -20
         )
@@ -353,6 +390,39 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             tabletFinishCenterYConstraint,
         ]
 
+        // Phone: left of shutter (mirror of quick-camera Done on the right) — ready only
+        phoneCancelConstraints = [
+            cancelButton.centerYAnchor.constraint(equalTo: finishButton.centerYAnchor),
+            cancelButton.leadingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20
+            ),
+            cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ]
+        // iPad: above shutter in the side rail (gap matches quick-camera rail `gap: 28`) — ready only
+        tabletCancelConstraints = [
+            cancelButton.centerXAnchor.constraint(equalTo: sideRailView.centerXAnchor),
+            cancelButton.bottomAnchor.constraint(
+                equalTo: finishButton.topAnchor, constant: -28
+            ),
+            cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            cancelButton.leadingAnchor.constraint(
+                greaterThanOrEqualTo: sideRailView.leadingAnchor, constant: 8
+            ),
+            cancelButton.trailingAnchor.constraint(
+                lessThanOrEqualTo: sideRailView.trailingAnchor, constant: -8
+            ),
+        ]
+        // Post-scan / error: top-left escape — clear of the bottom sheet
+        cancelTopLeftConstraints = [
+            cancelButton.topAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12
+            ),
+            cancelButton.leadingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ]
+
         NSLayoutConstraint.activate([
             backdropView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             backdropView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -367,19 +437,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
             finishButtonWidthConstraint,
             finishButtonHeightConstraint,
-
-            // Cancel button — top left of main column
-            cancelButton.topAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12
-            ),
-            cancelButton.leadingAnchor.constraint(
-                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
-            ),
-            cancelButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 
-    /// Swap phone bottom chrome vs iPad right rail; hide frosted bar on iPad while scanning.
+    /// Swap phone bottom chrome vs iPad right rail; hide bottom bar on iPad while scanning.
     private func applyControlLayout() {
         let tablet = isTabletLayout
         let isPostScan = postScanCardView != nil
@@ -398,6 +459,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         NSLayoutConstraint.deactivate(phoneFinishConstraints)
         NSLayoutConstraint.deactivate(tabletFinishConstraints)
+        NSLayoutConstraint.deactivate(phoneCancelConstraints)
+        NSLayoutConstraint.deactivate(tabletCancelConstraints)
+        NSLayoutConstraint.deactivate(cancelTopLeftConstraints)
 
         if tablet {
             NSLayoutConstraint.activate(tabletFinishConstraints)
@@ -406,7 +470,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
             backdropTrailingPhoneConstraint.isActive = false
             backdropTrailingTabletConstraint.isActive = true
-            // No bottom frosted chrome during scan on iPad
+            // No bottom chrome during scan on iPad
             backdropView.isHidden = !showBottomChrome
             if !showBottomChrome {
                 backdropTopToFinishConstraint.isActive = false
@@ -415,9 +479,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             NSLayoutConstraint.activate(phoneFinishConstraints)
             finishButtonWidthConstraint.constant = phoneFinishButtonSize
             finishButtonHeightConstraint.constant = phoneFinishButtonSize
-            // Same bottom inset as quick-camera shutter row
+            // Match quick camera shutter Y: paddingBottom + Photo/Video toggle reserve
             phoneFinishBottomConstraint.constant =
-                -(max(view.safeAreaInsets.bottom, 12) + 8)
+                -(max(view.safeAreaInsets.bottom, 12) + 8 + phoneShutterBelowChrome)
 
             backdropTrailingTabletConstraint.isActive = false
             backdropTrailingPhoneConstraint.isActive = true
@@ -427,9 +491,21 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             }
         }
 
-        applyFinishButtonAppearance(animated: false)
+        // Ready: beside shutter. Post-scan / error: top-left (clear of the sheet).
+        if showBottomChrome {
+            NSLayoutConstraint.activate(cancelTopLeftConstraints)
+        } else if tablet {
+            NSLayoutConstraint.activate(tabletCancelConstraints)
+        } else {
+            NSLayoutConstraint.activate(phoneCancelConstraints)
+        }
 
-        updateReadyOverlayForLayout(isTablet: tablet)
+        applyFinishButtonAppearance(animated: false)
+        applyCancelButtonChrome(
+            emphasized: showBottomChrome,
+            railStyle: tablet && !showBottomChrome
+        )
+        updateCancelButtonVisibility(animated: false)
 
         if tablet {
             view.bringSubviewToFront(sideRailView)
@@ -444,15 +520,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             view.bringSubviewToFront(errorCard)
             view.bringSubviewToFront(cancelButton)
         }
-    }
-
-    private func updateReadyOverlayForLayout(isTablet: Bool) {
-        guard let label = readyInstructionLabel else { return }
-        label.text = isTablet
-            ? "Tap the button on the right to start scanning"
-            : "Tap the button below to start scanning"
-        readyLabelBottomConstraint?.isActive = !isTablet
-        readyLabelCenterYConstraint?.isActive = isTablet
     }
 
     private func makePostScanActionButton(
@@ -553,17 +620,12 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         backdropTopToPostScanConstraint?.isActive = true
         backdropView.isHidden = false
-        backdropView.isUserInteractionEnabled = true
+        // Don't intercept taps above the sheet (Cancel lives top-left).
+        backdropView.isUserInteractionEnabled = false
 
-        UIView.transition(
-            with: cancelButton,
-            duration: 0.5,
-            options: .transitionCrossDissolve,
-            animations: {
-                self.applyCancelButtonChrome(emphasized: true)
-            },
-            completion: nil
-        )
+        applyCancelButtonChrome(emphasized: true)
+        cancelButton.alpha = 1
+        cancelButton.isUserInteractionEnabled = cancelButton.isEnabled
 
         card.alpha = 0
         card.transform = CGAffineTransform(translationX: 0, y: 24)
@@ -604,6 +666,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         ])
 
         applyControlLayout()
+        view.bringSubviewToFront(cancelButton)
     }
 
     private func teardownPostScanUI() {
@@ -820,11 +883,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         backdropTopToErrorCardConstraint?.isActive = true
         backdropView.isHidden = false
-        backdropView.isUserInteractionEnabled = true
+        // Sheet chrome only — don't block top-left Cancel.
+        backdropView.isUserInteractionEnabled = false
 
         cancelButton.isEnabled = true
         applyCancelButtonChrome(emphasized: true)
         cancelButton.alpha = 1
+        cancelButton.isUserInteractionEnabled = true
 
         card.alpha = 0
         card.transform = CGAffineTransform(translationX: 0, y: 24)
@@ -870,6 +935,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         ])
 
         applyControlLayout()
+        view.bringSubviewToFront(cancelButton)
     }
 
     @objc private func errorCardContinueTapped() {
@@ -879,7 +945,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             setupPostScanUI()
         } else {
             backdropTopToPostScanConstraint?.isActive = true
-            backdropView.isUserInteractionEnabled = true
+            backdropView.isUserInteractionEnabled = false
             applyControlLayout()
         }
     }
@@ -901,7 +967,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         } else {
             postScanCardView?.isHidden = false
             backdropTopToPostScanConstraint?.isActive = true
-            backdropView.isUserInteractionEnabled = true
+            backdropView.isUserInteractionEnabled = false
             applyControlLayout()
         }
         // Re-attempt finish/export with the rooms we already have
@@ -977,7 +1043,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        setupReadyUI()
         startAVPreview()
     }
 
@@ -1264,76 +1329,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
     }
 
-    // Shows instructions overlay with a large red record button before scanning begins
-    private func setupReadyUI() {
-        let overlay = UIView()
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        overlay.backgroundColor = UIColor.black.withAlphaComponent(0.55)
-        overlay.tag = 888
-        overlay.isUserInteractionEnabled = false
-        // Insert below finishButton so the button stays tappable
-        view.insertSubview(overlay, belowSubview: finishButton)
-
-        let label = UILabel()
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.textColor = .white
-        label.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        overlay.addSubview(label)
-        readyInstructionLabel = label
-
-        let bottomConstraint = label.bottomAnchor.constraint(
-            equalTo: overlay.bottomAnchor, constant: -140
-        )
-        let centerYConstraint = label.centerYAnchor.constraint(equalTo: overlay.centerYAnchor)
-        readyLabelBottomConstraint = bottomConstraint
-        readyLabelCenterYConstraint = centerYConstraint
-
-        let tablet = isTabletLayout
-        label.text = tablet
-            ? "Tap the button on the right to start scanning"
-            : "Tap the button below to start scanning"
-
-        var constraints: [NSLayoutConstraint] = [
-            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            overlay.topAnchor.constraint(equalTo: view.topAnchor),
-            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-            label.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 32),
-            label.trailingAnchor.constraint(equalTo: overlay.trailingAnchor, constant: -32),
-            tablet ? centerYConstraint : bottomConstraint,
-        ]
-        if tablet {
-            // Keep the right rail undimmed and tappable
-            constraints.append(
-                overlay.trailingAnchor.constraint(equalTo: sideRailView.leadingAnchor)
-            )
-        } else {
-            constraints.append(
-                overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-            )
-        }
-        NSLayoutConstraint.activate(constraints)
-    }
-
     public func startSession() {
         print("[RoomPlan] starting session")
-        // Dismiss the ready overlay if present
-        if let overlay = view.viewWithTag(888) {
-            UIView.animate(withDuration: 0.25, animations: {
-                overlay.alpha = 0
-            }, completion: { _ in
-                overlay.removeFromSuperview()
-            })
-        }
-        readyInstructionLabel = nil
-        readyLabelBottomConstraint = nil
-        readyLabelCenterYConstraint = nil
+        isReadyToStart = false
         isSessionRunning = true
         setFinishButtonToRecording()
         showScanningHint()
+        updateCancelButtonVisibility(animated: true)
 
         // Stop the AV preview and hand the camera off to RoomPlan.
         // We stop on a background thread then call run() on main once it's done —
@@ -1369,7 +1371,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         let hint = UILabel()
         hint.translatesAutoresizingMaskIntoConstraints = false
         hint.tag = 887
-        hint.text = "Scan this room. For best results, scan one room at a time — stop and start again for each room."
+        hint.text = "Scan one room/area, then tap stop."
         hint.textColor = .white
         hint.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         hint.textAlignment = .center
@@ -1410,20 +1412,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         teardownPostScanUI()
         roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
         isSessionRunning = true
+        isReadyToStart = false
         // Restore the record button
         setFinishButtonToRecording()
         finishButton.isHidden = false
         showScanningHint()
-        UIView.transition(
-            with: cancelButton,
-            duration: 0.5,
-            options: .transitionCrossDissolve,
-            animations: {
-                self.cancelButton.isEnabled = true
-                self.applyCancelButtonChrome(emphasized: false)
-            },
-            completion: nil
-        )
+        cancelButton.isEnabled = true
+        applyCancelButtonChrome(emphasized: false)
+        updateCancelButtonVisibility(animated: true)
     }
 
     @objc
@@ -1434,12 +1430,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.viewWithTag(887)?.removeFromSuperview()
         // Hide the record button — post-scan UI has its own actions
         finishButton.isHidden = true
+        // Show Cancel immediately (no fade race with post-scan layout).
+        updateCancelButtonVisibility(animated: false)
         setupPostScanUI()
     }
 
     @objc
     private func finishTapped() {
-        if view.viewWithTag(888) != nil {
+        if isReadyToStart {
             // Not yet started — tap starts the scan
             startSession()
         } else if isSessionRunning {
