@@ -46,6 +46,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     @IBOutlet var anotherScanButton: UIButton!
     @IBOutlet var exportButton: UIButton!
     private var postScanCardView: UIView?
+    private var postScanTitleLabel: UILabel?
+    private var postScanHelperLabel: UILabel?
+    private var rescanRoomButton: UIButton?
+    /// Expected room total while the just-stopped room is still building (array lags by ~1).
+    private var postScanExpectedRoomCount: Int = 0
+    /// User tapped Rescan before the stopped room finished building — drop it on append.
+    private var discardNextAppendedRoom: Bool = false
     private var errorCardView: UIView?
     private var lastDismissErrorCode: String?
     private var lastDismissErrorMessage: String?
@@ -640,8 +647,23 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         return button
     }
 
+    private func makePostScanTertiaryButton(title: String) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        button.setTitle(title, for: .normal)
+        button.setTitleColor(UIColor.white.withAlphaComponent(0.78), for: .normal)
+        button.setTitleColor(UIColor.white.withAlphaComponent(0.4), for: .disabled)
+        button.backgroundColor = .clear
+        return button
+    }
+
     private func setupPostScanUI() {
-        guard postScanCardView == nil else { return }
+        guard postScanCardView == nil else {
+            updatePostScanCopy()
+            return
+        }
 
         let card = UIView()
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -657,22 +679,23 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         let titleLabel = UILabel()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "Room scan captured"
+        titleLabel.text = "Room scanned"
         titleLabel.textColor = .white
         titleLabel.font = UIFont.systemFont(ofSize: 20, weight: .bold)
         titleLabel.numberOfLines = 0
+        postScanTitleLabel = titleLabel
 
         let helperLabel = UILabel()
         helperLabel.translatesAutoresizingMaskIntoConstraints = false
-        helperLabel.text =
-            "One room captured. Scan another, or finish the floor plan."
         helperLabel.textColor = UIColor.white.withAlphaComponent(0.88)
         helperLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         helperLabel.numberOfLines = 0
+        postScanHelperLabel = helperLabel
 
+        // Primary (top): scan next — secondary: done — tertiary text: rescan
         anotherScanButton = makePostScanActionButton(
-            title: "Scan Another Room",
-            isPrimary: false
+            title: "Scan next room",
+            isPrimary: true
         )
         anotherScanButton.addTarget(
             self,
@@ -681,8 +704,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
 
         exportButton = makePostScanActionButton(
-            title: "Finish Floor Plan",
-            isPrimary: true
+            title: "Done scanning",
+            isPrimary: false
         )
         exportButton.addTarget(
             self,
@@ -690,12 +713,21 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             for: .touchUpInside
         )
 
+        let rescanButton = makePostScanTertiaryButton(title: "Rescan this room")
+        rescanButton.addTarget(
+            self,
+            action: #selector(rescanLastRoomTapped),
+            for: .touchUpInside
+        )
+        rescanRoomButton = rescanButton
+
         let buttonStack = UIStackView(arrangedSubviews: [
-            anotherScanButton, exportButton,
+            anotherScanButton, exportButton, rescanButton,
         ])
         buttonStack.axis = .vertical
         buttonStack.spacing = 12
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.setCustomSpacing(8, after: exportButton)
 
         let contentStack = UIStackView(arrangedSubviews: [
             titleLabel, helperLabel, buttonStack,
@@ -759,11 +791,35 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         applyControlLayout()
         view.bringSubviewToFront(cancelButton)
+        updatePostScanCopy()
+    }
+
+    private func updatePostScanCopy() {
+        let count = max(capturedRoomArray.count, postScanExpectedRoomCount, 1)
+        let roomWord = count == 1 ? "room" : "rooms"
+        postScanTitleLabel?.text = "Room scanned"
+        postScanHelperLabel?.text =
+            "\(count) \(roomWord) done. Scan the next room, or finish if you’re done."
+    }
+
+    @objc private func rescanLastRoomTapped() {
+        if !capturedRoomArray.isEmpty {
+            capturedRoomArray.removeLast()
+            discardNextAppendedRoom = false
+        } else {
+            // Build still in flight after Stop — drop that room when it arrives.
+            discardNextAppendedRoom = true
+        }
+        postScanExpectedRoomCount = capturedRoomArray.count
+        restartSession()
     }
 
     private func teardownPostScanUI() {
         postScanCardView?.removeFromSuperview()
         postScanCardView = nil
+        postScanTitleLabel = nil
+        postScanHelperLabel = nil
+        rescanRoomButton = nil
         postScanCardTrailingConstraint = nil
         backdropTopToPostScanConstraint?.isActive = false
         backdropTopToPostScanConstraint = nil
@@ -848,7 +904,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private enum ScanErrorPrimaryAction {
-        case `continue`
+        /// Prior rooms kept; failed room discarded — rescan / finish / exit.
+        case recover
         case tryAgain
         case retryExport
         case closeOnly
@@ -876,17 +933,36 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
     }
 
+    private func recoveryHelperMessage(priorRoomCount: Int) -> String {
+        let roomWord = priorRoomCount == 1 ? "room" : "rooms"
+        return
+            "This room wasn’t saved. We kept your other \(priorRoomCount) \(roomWord). Rescan this one, or finish with what you have."
+    }
+
+    private func makeExitWithoutSavingButton(isPrimary: Bool) -> UIButton {
+        let button = makePostScanActionButton(
+            title: "Exit without saving",
+            isPrimary: isPrimary
+        )
+        button.addTarget(
+            self,
+            action: #selector(errorCardExitWithoutSavingTapped),
+            for: .touchUpInside
+        )
+        return button
+    }
+
     private func renderErrorCard(
         title: String,
         message: String,
         primaryAction: ScanErrorPrimaryAction
     ) {
         teardownErrorCard()
-        // Keep post-scan chrome available for Continue / retry-export; hide it under the error card.
+        // Recovery / try-again replace post-scan chrome; retry-export may still need it.
         switch primaryAction {
-        case .continue, .retryExport:
+        case .retryExport:
             postScanCardView?.isHidden = true
-        case .tryAgain, .closeOnly:
+        case .recover, .tryAgain, .closeOnly:
             teardownPostScanUI()
         }
 
@@ -926,37 +1002,56 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         var arranged: [UIView] = [titleLabel, helperLabel]
 
         switch primaryAction {
-        case .continue:
-            let continueButton = makePostScanActionButton(title: "Continue", isPrimary: true)
-            continueButton.addTarget(self, action: #selector(errorCardContinueTapped), for: .touchUpInside)
-            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
-            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
-            let stack = UIStackView(arrangedSubviews: [continueButton, closeButton])
+        case .recover:
+            let rescanButton = makePostScanActionButton(
+                title: "Rescan room",
+                isPrimary: true
+            )
+            rescanButton.addTarget(
+                self,
+                action: #selector(errorCardTryAgainTapped),
+                for: .touchUpInside
+            )
+            let doneButton = makePostScanActionButton(
+                title: "Done scanning",
+                isPrimary: false
+            )
+            doneButton.addTarget(
+                self,
+                action: #selector(confirmFinishFloorPlan),
+                for: .touchUpInside
+            )
+            let exitButton = makeExitWithoutSavingButton(isPrimary: false)
+            let stack = UIStackView(arrangedSubviews: [rescanButton, doneButton, exitButton])
             stack.axis = .vertical
             stack.spacing = 12
             arranged.append(stack)
         case .tryAgain:
-            let tryAgainButton = makePostScanActionButton(title: "Try Again", isPrimary: true)
-            tryAgainButton.addTarget(self, action: #selector(errorCardTryAgainTapped), for: .touchUpInside)
-            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
-            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
-            let stack = UIStackView(arrangedSubviews: [tryAgainButton, closeButton])
+            let tryAgainButton = makePostScanActionButton(title: "Try again", isPrimary: true)
+            tryAgainButton.addTarget(
+                self,
+                action: #selector(errorCardTryAgainTapped),
+                for: .touchUpInside
+            )
+            let exitButton = makeExitWithoutSavingButton(isPrimary: false)
+            let stack = UIStackView(arrangedSubviews: [tryAgainButton, exitButton])
             stack.axis = .vertical
             stack.spacing = 12
             arranged.append(stack)
         case .retryExport:
-            let tryAgainButton = makePostScanActionButton(title: "Try Again", isPrimary: true)
-            tryAgainButton.addTarget(self, action: #selector(errorCardRetryExportTapped), for: .touchUpInside)
-            let closeButton = makePostScanActionButton(title: "Close", isPrimary: false)
-            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
-            let stack = UIStackView(arrangedSubviews: [tryAgainButton, closeButton])
+            let tryAgainButton = makePostScanActionButton(title: "Try again", isPrimary: true)
+            tryAgainButton.addTarget(
+                self,
+                action: #selector(errorCardRetryExportTapped),
+                for: .touchUpInside
+            )
+            let exitButton = makeExitWithoutSavingButton(isPrimary: false)
+            let stack = UIStackView(arrangedSubviews: [tryAgainButton, exitButton])
             stack.axis = .vertical
             stack.spacing = 12
             arranged.append(stack)
         case .closeOnly:
-            let closeButton = makePostScanActionButton(title: "Close", isPrimary: true)
-            closeButton.addTarget(self, action: #selector(errorCardCloseTapped), for: .touchUpInside)
-            arranged.append(closeButton)
+            arranged.append(makeExitWithoutSavingButton(isPrimary: true))
         }
 
         let contentStack = UIStackView(arrangedSubviews: arranged)
@@ -1029,18 +1124,6 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         view.bringSubviewToFront(cancelButton)
     }
 
-    @objc private func errorCardContinueTapped() {
-        teardownErrorCard()
-        postScanCardView?.isHidden = false
-        if postScanCardView == nil {
-            setupPostScanUI()
-        } else {
-            backdropTopToPostScanConstraint?.isActive = true
-            backdropView.isUserInteractionEnabled = false
-            applyControlLayout()
-        }
-    }
-
     @objc private func errorCardTryAgainTapped() {
         // Clear export overlay if present
         view.viewWithTag(999)?.removeFromSuperview()
@@ -1066,23 +1149,23 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func restorePostScanActionButtons() {
-        if exportButton != nil {
-            exportButton.isEnabled = true
-            exportButton.backgroundColor = UIColor.systemBlue
-            exportButton.removeTarget(nil, action: nil, for: .allEvents)
-            exportButton.addTarget(
-                self,
-                action: #selector(confirmFinishFloorPlan),
-                for: .touchUpInside
-            )
-        }
         if anotherScanButton != nil {
             anotherScanButton.isEnabled = true
-            anotherScanButton.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+            anotherScanButton.backgroundColor = UIColor.systemBlue
             anotherScanButton.removeTarget(nil, action: nil, for: .allEvents)
             anotherScanButton.addTarget(
                 self,
                 action: #selector(restartSession),
+                for: .touchUpInside
+            )
+        }
+        if exportButton != nil {
+            exportButton.isEnabled = true
+            exportButton.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+            exportButton.removeTarget(nil, action: nil, for: .allEvents)
+            exportButton.addTarget(
+                self,
+                action: #selector(confirmFinishFloorPlan),
                 for: .touchUpInside
             )
         }
@@ -1093,7 +1176,28 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         applyCancelButtonChrome(emphasized: true)
     }
 
-    @objc private func errorCardCloseTapped() {
+    @objc private func errorCardExitWithoutSavingTapped() {
+        let roomCount = capturedRoomArray.count
+        guard roomCount > 0 else {
+            dismissScanWithoutSaving()
+            return
+        }
+
+        let alert = UIAlertController(
+            title: "Exit without saving?",
+            message: "Rooms from this scan won’t be saved.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+        alert.addAction(
+            UIAlertAction(title: "Exit", style: .destructive) { [weak self] _ in
+                self?.dismissScanWithoutSaving()
+            }
+        )
+        present(alert, animated: true, completion: nil)
+    }
+
+    private func dismissScanWithoutSaving() {
         teardownErrorCard()
         sendScanResultAndDismiss(
             status: .Error,
@@ -1113,17 +1217,17 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     @objc private func confirmFinishFloorPlan() {
         let alert = UIAlertController(
-            title: "Finish floor plan?",
+            title: "Done scanning?",
             message:
-                "This will create the final floor plan from all scanned rooms. You won't be able to add more rooms to this scan afterward.",
+                "We’ll build the floor plan from the rooms you scanned. You can’t add more rooms to this scan afterward.",
             preferredStyle: .alert
         )
 
         alert.addAction(
-            UIAlertAction(title: "Keep Scanning", style: .cancel, handler: nil)
+            UIAlertAction(title: "Keep scanning", style: .cancel, handler: nil)
         )
         alert.addAction(
-            UIAlertAction(title: "Finish Floor Plan", style: .default) { _ in
+            UIAlertAction(title: "Done scanning", style: .default) { _ in
                 self.superExportResults(self.exportButton as Any)
             }
         )
@@ -1240,6 +1344,12 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             self,
             action: #selector(restartSession),
             for: .touchUpInside
+        )
+        rescanRoomButton?.isEnabled = false
+        rescanRoomButton?.removeTarget(
+            nil,
+            action: nil,
+            for: .allEvents
         )
         UIView.animate(withDuration: 0.5) {
             self.anotherScanButton.backgroundColor = UIColor.white
@@ -1462,6 +1572,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // freezes. Keep roomCaptureView as the backdrop; Start calls startSession().
         print("[RoomPlan] returning to ready for next room")
         exportPendingAfterBuild = false
+        // Keep discardNextAppendedRoom if Rescan set it; clear only for normal Scan next.
+        // rescanLastRoomTapped sets the flag before calling restartSession.
         teardownErrorCard()
         teardownPostScanUI()
 
@@ -1489,6 +1601,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         finishButton.isHidden = true
         // Show Cancel immediately (no fade race with post-scan layout).
         updateCancelButtonVisibility(animated: false)
+        // Array append lags until room build finishes — expect current room too.
+        postScanExpectedRoomCount = capturedRoomArray.count + 1
         setupPostScanUI()
     }
 
@@ -1520,31 +1634,89 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         applyFinishButtonAppearance(animated: true)
     }
 
+    /// Return to the post-scan decision card while keeping rooms already in `capturedRoomArray`.
+    /// Uses continuous AR session (`pauseARSession: false`) — same as Stop / Rescan.
+    private func returnToPostScanKeepingRooms() {
+        exportPendingAfterBuild = false
+        teardownErrorCard()
+
+        if isSessionRunning {
+            // Drop the in-flight room; keep prior rooms only.
+            discardNextAppendedRoom = true
+            roomCaptureView?.captureSession.stop(pauseARSession: false)
+            isSessionRunning = false
+        }
+
+        isReadyToStart = false
+        finishButton.isHidden = true
+        postScanExpectedRoomCount = capturedRoomArray.count
+
+        if postScanCardView != nil {
+            postScanCardView?.isHidden = false
+            backdropTopToFinishConstraint.isActive = false
+            backdropTopToPostScanConstraint?.isActive = true
+            backdropView.isHidden = false
+            backdropView.isUserInteractionEnabled = false
+            updatePostScanCopy()
+            applyControlLayout()
+        } else {
+            setupPostScanUI()
+        }
+
+        updateCancelButtonVisibility(animated: false)
+        updateReadyStatusVisibility(animated: true)
+        view.bringSubviewToFront(cancelButton)
+    }
+
     @objc
     func cancelSession() {
+        // Progress exists: Cancel backs out of the current step — never wipe the floor plan.
+        if !capturedRoomArray.isEmpty {
+            // Already on the decision card — nothing to cancel.
+            if postScanCardView != nil && !isSessionRunning {
+                return
+            }
+
+            if isReadyToStart && !isSessionRunning {
+                // Between rooms (after Scan next / Rescan) — back to post-scan.
+                returnToPostScanKeepingRooms()
+                return
+            }
+
+            // Mid active scan of an additional room — confirm, then keep prior rooms.
+            let alert = UIAlertController(
+                title: "Stop this room?",
+                message: "Your other rooms will be kept.",
+                preferredStyle: .alert
+            )
+            alert.addAction(
+                UIAlertAction(title: "Keep scanning", style: .cancel, handler: nil)
+            )
+            alert.addAction(
+                UIAlertAction(title: "Stop", style: .default) { [weak self] _ in
+                    self?.returnToPostScanKeepingRooms()
+                }
+            )
+            present(alert, animated: true, completion: nil)
+            return
+        }
+
+        // No rooms yet — abandoning the whole session.
         let alertController = UIAlertController(
-            title: "Cancel Room Scan?",
-            message:
-                "If a scan is canceled, you'll have to start over again next time.",
+            title: "Cancel scan?",
+            message: "Nothing will be saved.",
             preferredStyle: .alert
         )
-
-        let confirmAction = UIAlertAction(title: "Confirm", style: .destructive)
-        { action in
-            // reset final structure on cancel
-            self.finalStructure = nil
-            self.sendScanResultAndDismiss(status: .Canceled)
-        }
-        alertController.addAction(confirmAction)
-
-        let cancelAction = UIAlertAction(
-            title: "Cancel",
-            style: .cancel,
-            handler: nil
+        alertController.addAction(
+            UIAlertAction(title: "Keep scanning", style: .cancel, handler: nil)
         )
-        alertController.addAction(cancelAction)
-
-        self.present(alertController, animated: true, completion: nil)
+        alertController.addAction(
+            UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in
+                self?.finalStructure = nil
+                self?.sendScanResultAndDismiss(status: .Canceled)
+            }
+        )
+        present(alertController, animated: true, completion: nil)
     }
 
     @objc
@@ -1587,46 +1759,73 @@ extension RoomPlanCaptureViewController {
             captureCopy = nil
         }
 
+        // Capture errors: discard this room. Keep only rooms finished earlier.
+        if let captureCopy {
+            let priorCount = self.capturedRoomArray.count
+            let primary: ScanErrorPrimaryAction
+            let message: String
+            switch captureCopy.code {
+            case "deviceNotSupported":
+                primary = .closeOnly
+                message = captureCopy.message
+            default:
+                if priorCount > 0 {
+                    primary = .recover
+                    message = self.recoveryHelperMessage(priorRoomCount: priorCount)
+                } else {
+                    primary = .tryAgain
+                    message = captureCopy.message
+                }
+            }
+            self.showErrorCard(
+                title: captureCopy.title,
+                message: message,
+                primaryAction: primary
+            )
+            self.exportPendingAfterBuild = false
+            return
+        }
+
         let roomBuilder = RoomBuilder(options: [.beautifyObjects])
         Task {
-            var builtRoom = false
             do {
                 let capturedRoom = try await roomBuilder.capturedRoom(from: didEndWith)
+                let shouldDiscard = await MainActor.run { () -> Bool in
+                    if self.discardNextAppendedRoom {
+                        self.discardNextAppendedRoom = false
+                        print("[RoomPlan] Discarding rebuilt room after Rescan")
+                        return true
+                    }
+                    return false
+                }
+                if shouldDiscard {
+                    return
+                }
                 print("[RoomPlan] Appending new captured room")
                 self.capturedRoomArray.append(capturedRoom)
-                builtRoom = true
+                await MainActor.run {
+                    self.postScanExpectedRoomCount = self.capturedRoomArray.count
+                    self.updatePostScanCopy()
+                }
             } catch {
                 // Non-fatal: user stays in the scan UI and can try again.
                 print("[RoomPlan] Failed to build captured room: \(error)")
                 let message = error.localizedDescription
                 self.emitScanError(message: message, context: "roomBuilder", code: "roomBuilderFailed")
-                if captureCopy == nil {
-                    let hasPriorRooms = !self.capturedRoomArray.isEmpty
+                let priorCount = self.capturedRoomArray.count
+                if priorCount > 0 {
                     self.showErrorCard(
                         title: "Couldn’t process this room",
-                        message: "The scan finished, but the room model couldn’t be built. \(hasPriorRooms ? "You can continue with previous rooms or try again." : "Try scanning again.")",
-                        primaryAction: hasPriorRooms ? .continue : .tryAgain
+                        message: self.recoveryHelperMessage(priorRoomCount: priorCount),
+                        primaryAction: .recover
+                    )
+                } else {
+                    self.showErrorCard(
+                        title: "Couldn’t process this room",
+                        message: "The scan finished, but the room model couldn’t be built. Try scanning again.",
+                        primaryAction: .tryAgain
                     )
                 }
-            }
-
-            // CaptureError: surface after attempting to keep partial results.
-            if let captureCopy {
-                let hasRooms = !self.capturedRoomArray.isEmpty || builtRoom
-                let primary: ScanErrorPrimaryAction
-                switch captureCopy.code {
-                case "deviceNotSupported":
-                    primary = .closeOnly
-                default:
-                    primary = hasRooms ? .continue : .tryAgain
-                }
-                self.showErrorCard(
-                    title: captureCopy.title,
-                    message: captureCopy.message,
-                    primaryAction: primary
-                )
-                // Don't auto-export when RoomPlan ended with a capture error.
-                self.exportPendingAfterBuild = false
                 return
             }
 
