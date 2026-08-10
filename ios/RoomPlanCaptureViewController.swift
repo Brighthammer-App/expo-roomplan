@@ -53,6 +53,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var postScanExpectedRoomCount: Int = 0
     /// User tapped Rescan before the stopped room finished building — drop it on append.
     private var discardNextAppendedRoom: Bool = false
+    /// True from Stop until room build (+ merge dry-run for room 2+) finishes.
+    private var isPostScanAwaitingValidation: Bool = false
     private var errorCardView: UIView?
     private var lastDismissErrorCode: String?
     private var lastDismissErrorMessage: String?
@@ -393,14 +395,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         let scale = view.window?.screen.scale ?? UIScreen.main.scale
         config.background.strokeWidth = 1.0 / scale
         cancelButton.configuration = config
-        if !isSessionRunning {
-            cancelButton.alpha = cancelButton.isEnabled ? 1.0 : 0.4
-        }
+        // Don't force alpha here — updateCancelButtonVisibility owns scan / post-scan hide.
     }
 
-    /// Hide Cancel while scanning (mirrors quick-camera Done during recording).
+    /// Hide Cancel while scanning or on the post-scan decision card (actions live on the card).
     private func updateCancelButtonVisibility(animated: Bool = false) {
-        let shouldHide = isSessionRunning
+        let postScanVisible =
+            postScanCardView != nil && !(postScanCardView?.isHidden ?? true)
+        let shouldHide = isSessionRunning || postScanVisible
         let updates = {
             if shouldHide {
                 self.cancelButton.alpha = 0
@@ -653,8 +655,9 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
         button.setTitle(title, for: .normal)
-        button.setTitleColor(UIColor.white.withAlphaComponent(0.78), for: .normal)
-        button.setTitleColor(UIColor.white.withAlphaComponent(0.4), for: .disabled)
+        // Soft red on dark sheet — scoped destructive (discard last room).
+        button.setTitleColor(UIColor.systemRed.withAlphaComponent(0.92), for: .normal)
+        button.setTitleColor(UIColor.systemRed.withAlphaComponent(0.4), for: .disabled)
         button.backgroundColor = .clear
         return button
     }
@@ -744,12 +747,11 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
         backdropTopToPostScanConstraint?.isActive = true
         backdropView.isHidden = false
-        // Don't intercept taps above the sheet (Cancel lives top-left).
+        // Don't intercept taps above the sheet.
         backdropView.isUserInteractionEnabled = false
 
-        applyCancelButtonChrome(emphasized: true)
-        cancelButton.alpha = 1
-        cancelButton.isUserInteractionEnabled = cancelButton.isEnabled
+        // Decision actions live on the card — hide top-left Cancel.
+        updateCancelButtonVisibility(animated: false)
 
         card.alpha = 0
         card.transform = CGAffineTransform(translationX: 0, y: 24)
@@ -790,11 +792,26 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         ])
 
         applyControlLayout()
-        view.bringSubviewToFront(cancelButton)
+        updateCancelButtonVisibility(animated: false)
         updatePostScanCopy()
+        if isPostScanAwaitingValidation {
+            setPostScanActionsEnabled(false)
+        }
     }
 
     private func updatePostScanCopy() {
+        if isPostScanAwaitingValidation {
+            postScanTitleLabel?.text = "Checking floor plan…"
+            // Room 2+: dry-run merge; room 1: waiting on RoomBuilder only.
+            let willMerge =
+                capturedRoomArray.count >= 2 || postScanExpectedRoomCount >= 2
+            postScanHelperLabel?.text =
+                willMerge
+                ? "Making sure this room fits with your other scans."
+                : "Processing this room…"
+            return
+        }
+
         let count = max(capturedRoomArray.count, postScanExpectedRoomCount, 1)
         let roomWord = count == 1 ? "room" : "rooms"
         postScanTitleLabel?.text = "Room scanned"
@@ -802,7 +819,33 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             "\(count) \(roomWord) done. Scan the next room, or finish if you’re done."
     }
 
+    /// Gate Scan next / Done / Rescan until room build (+ merge dry-run) completes.
+    private func setPostScanActionsEnabled(_ enabled: Bool) {
+        guard postScanCardView != nil else { return }
+        anotherScanButton?.isEnabled = enabled
+        anotherScanButton?.alpha = enabled ? 1.0 : 0.45
+        exportButton?.isEnabled = enabled
+        exportButton?.alpha = enabled ? 1.0 : 0.45
+        rescanRoomButton?.isEnabled = enabled
+        rescanRoomButton?.alpha = enabled ? 1.0 : 0.45
+    }
+
     @objc private func rescanLastRoomTapped() {
+        let alert = UIAlertController(
+            title: "Rescan this room?",
+            message: "This replaces the last room you scanned. Your other rooms stay.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
+        alert.addAction(
+            UIAlertAction(title: "Rescan", style: .destructive) { [weak self] _ in
+                self?.performRescanLastRoom()
+            }
+        )
+        present(alert, animated: true, completion: nil)
+    }
+
+    private func performRescanLastRoom() {
         if !capturedRoomArray.isEmpty {
             capturedRoomArray.removeLast()
             discardNextAppendedRoom = false
@@ -824,6 +867,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         backdropTopToPostScanConstraint?.isActive = false
         backdropTopToPostScanConstraint = nil
         backdropView.isUserInteractionEnabled = false
+        isPostScanAwaitingValidation = false
         applyControlLayout()
     }
 
@@ -1151,6 +1195,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private func restorePostScanActionButtons() {
         if anotherScanButton != nil {
             anotherScanButton.isEnabled = true
+            anotherScanButton.alpha = 1.0
             anotherScanButton.backgroundColor = UIColor.systemBlue
             anotherScanButton.removeTarget(nil, action: nil, for: .allEvents)
             anotherScanButton.addTarget(
@@ -1161,6 +1206,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         }
         if exportButton != nil {
             exportButton.isEnabled = true
+            exportButton.alpha = 1.0
             exportButton.backgroundColor = UIColor.white.withAlphaComponent(0.14)
             exportButton.removeTarget(nil, action: nil, for: .allEvents)
             exportButton.addTarget(
@@ -1169,11 +1215,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 for: .touchUpInside
             )
         }
+        rescanRoomButton?.isEnabled = true
+        rescanRoomButton?.alpha = 1.0
         cancelButton.isEnabled = true
-        cancelButton.alpha = 1
         cancelButton.removeTarget(nil, action: nil, for: .allEvents)
         cancelButton.addTarget(self, action: #selector(cancelSession), for: .touchUpInside)
         applyCancelButtonChrome(emphasized: true)
+        updateCancelButtonVisibility(animated: false)
     }
 
     @objc private func errorCardExitWithoutSavingTapped() {
@@ -1224,10 +1272,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         )
 
         alert.addAction(
-            UIAlertAction(title: "Keep scanning", style: .cancel, handler: nil)
+            UIAlertAction(title: "Cancel", style: .cancel, handler: nil)
         )
         alert.addAction(
-            UIAlertAction(title: "Done scanning", style: .default) { _ in
+            UIAlertAction(title: "Finish", style: .default) { _ in
                 self.superExportResults(self.exportButton as Any)
             }
         )
@@ -1603,6 +1651,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         updateCancelButtonVisibility(animated: false)
         // Array append lags until room build finishes — expect current room too.
         postScanExpectedRoomCount = capturedRoomArray.count + 1
+        isPostScanAwaitingValidation = true
         setupPostScanUI()
     }
 
@@ -1650,6 +1699,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         isReadyToStart = false
         finishButton.isHidden = true
         postScanExpectedRoomCount = capturedRoomArray.count
+        isPostScanAwaitingValidation = false
 
         if postScanCardView != nil {
             postScanCardView?.isHidden = false
@@ -1658,14 +1708,15 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             backdropView.isHidden = false
             backdropView.isUserInteractionEnabled = false
             updatePostScanCopy()
+            setPostScanActionsEnabled(true)
             applyControlLayout()
         } else {
             setupPostScanUI()
+            setPostScanActionsEnabled(true)
         }
 
         updateCancelButtonVisibility(animated: false)
         updateReadyStatusVisibility(animated: true)
-        view.bringSubviewToFront(cancelButton)
     }
 
     @objc
@@ -1802,17 +1853,20 @@ extension RoomPlanCaptureViewController {
                     return
                 }
                 print("[RoomPlan] Appending new captured room")
-                self.capturedRoomArray.append(capturedRoom)
                 await MainActor.run {
-                    self.postScanExpectedRoomCount = self.capturedRoomArray.count
-                    self.updatePostScanCopy()
+                    self.capturedRoomArray.append(capturedRoom)
                 }
+                await self.finalizePostScanAfterRoomAppended()
             } catch {
                 // Non-fatal: user stays in the scan UI and can try again.
                 print("[RoomPlan] Failed to build captured room: \(error)")
                 let message = error.localizedDescription
                 self.emitScanError(message: message, context: "roomBuilder", code: "roomBuilderFailed")
                 let priorCount = self.capturedRoomArray.count
+                await MainActor.run {
+                    self.isPostScanAwaitingValidation = false
+                    self.exportPendingAfterBuild = false
+                }
                 if priorCount > 0 {
                     self.showErrorCard(
                         title: "Couldn’t process this room",
@@ -1828,15 +1882,74 @@ extension RoomPlanCaptureViewController {
                 }
                 return
             }
+        }
+    }
+
+    /// After a room is appended: dry-run StructureBuilder (room 2+), then unlock post-scan actions.
+    private func finalizePostScanAfterRoomAppended() async {
+        let roomsSnapshot = capturedRoomArray
+
+        await MainActor.run {
+            self.postScanExpectedRoomCount = roomsSnapshot.count
+            self.isPostScanAwaitingValidation = true
+            self.updatePostScanCopy()
+            self.setPostScanActionsEnabled(false)
+        }
+
+        if roomsSnapshot.count >= 2 {
+            do {
+                _ = try await structureBuilder.capturedStructure(from: roomsSnapshot)
+            } catch {
+                await MainActor.run {
+                    self.handleEarlyMergeFailure(error: error)
+                }
+                return
+            }
+        }
+
+        await MainActor.run {
+            self.isPostScanAwaitingValidation = false
+            self.postScanExpectedRoomCount = self.capturedRoomArray.count
+            self.updatePostScanCopy()
+            self.setPostScanActionsEnabled(true)
 
             // If Done was tapped while the session was still running, export now that the
-            // room is built rather than relying on the fixed 0.5s delay in superExportResults.
+            // room is built (and merge-validated) rather than racing a fixed delay.
             if self.exportPendingAfterBuild {
                 self.exportPendingAfterBuild = false
-                DispatchQueue.main.async {
-                    self.exportResults()
-                }
+                self.exportResults()
             }
+        }
+    }
+
+    /// Last room failed to merge — drop it and offer Rescan while keeping prior rooms.
+    private func handleEarlyMergeFailure(error: Error) {
+        if !capturedRoomArray.isEmpty {
+            capturedRoomArray.removeLast()
+        }
+        postScanExpectedRoomCount = capturedRoomArray.count
+        isPostScanAwaitingValidation = false
+        exportPendingAfterBuild = false
+
+        print("[RoomPlan] ERROR MERGING (early): \(error)")
+        let message = error.localizedDescription
+        emitScanError(message: message, context: "earlyMerge", code: "earlyMergeFailed")
+
+        let priorCount = capturedRoomArray.count
+        if priorCount > 0 {
+            showErrorCard(
+                title: "Couldn’t add this room",
+                message:
+                    "This room didn’t line up with your other scans. Rescan it, or finish with the rooms you already have.",
+                primaryAction: .recover
+            )
+        } else {
+            showErrorCard(
+                title: "Couldn’t add this room",
+                message:
+                    "This room didn’t line up with your floor plan. Try scanning again.",
+                primaryAction: .tryAgain
+            )
         }
     }
 }
