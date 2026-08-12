@@ -1,5 +1,6 @@
 //  RoomPlanCaptureViewController.swift
 
+import ARKit
 import Foundation
 import RealityKit
 import RoomPlan
@@ -8,7 +9,7 @@ import AVFoundation
 
 @available(iOS 17.0, *)
 class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
-    RoomCaptureSessionDelegate
+    RoomCaptureSessionDelegate, ARSessionObserver
 {
     private var roomCaptureView: RoomCaptureView!
     private var roomCaptureSessionConfig: RoomCaptureSession.Configuration =
@@ -97,6 +98,13 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     private var readyStatusLabel: UILabel!
     /// True until the user taps start — drives finish-button start vs stop behavior.
     private var isReadyToStart: Bool = true
+
+    /// Set while ARKit has suspended camera capture (backgrounding, screen lock,
+    /// incoming call). ARKit does not resume capture on its own — the session must be
+    /// re-run — so we track the suspension and recover on interruption end / becoming
+    /// active. Without this the passthrough stays black while RoomPlan keeps rendering
+    /// the mesh it already has, and the scan can only be discarded.
+    private var isARSessionInterrupted: Bool = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -202,6 +210,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         // Temporary frame — sized to 4:3 in viewDidLayoutSubviews.
         roomCaptureView = RoomCaptureView(frame: view.bounds)
         roomCaptureView?.captureSession.delegate = self
+        // Observe the underlying ARSession so interruptions (screen lock, call,
+        // backgrounding) and hard AR failures are visible to us. RoomCaptureSession
+        // forwards nothing about either.
+        roomCaptureView?.captureSession.arSession.delegate = self
         // Hide until scanning starts so the AV warm-up preview shows through underneath
         roomCaptureView?.alpha = 0
         view.insertSubview(roomCaptureView, at: 0)
@@ -1285,14 +1297,84 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Belt and braces with the JS-side keep-awake lock: a scan is minutes of
+        // walking with no touches, and letting the screen lock suspends ARKit capture.
+        UIApplication.shared.isIdleTimerDisabled = true
         startAVPreview()
         updateReadyStatusVisibility(animated: true)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     override func viewWillDisappear(_ flag: Bool) {
         super.viewWillDisappear(flag)
+        UIApplication.shared.isIdleTimerDisabled = false
+        NotificationCenter.default.removeObserver(
+            self,
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
         stopAVPreview()
         stopSession()
+    }
+
+    // MARK: - AR session interruption recovery
+
+    /// Backstop for `sessionInterruptionEnded`, which does not fire reliably for every
+    /// suspension path (notably screen lock on some devices). Only acts if we saw an
+    /// interruption and a scan is actually in flight.
+    @objc private func handleAppDidBecomeActive() {
+        guard isARSessionInterrupted, isSessionRunning else { return }
+        resumeARSessionAfterInterruption()
+    }
+
+    /// Re-run the capture session so ARKit resumes delivering camera frames. Tracking
+    /// state is not recoverable across a suspension, so relocalization is left to ARKit;
+    /// what matters is that passthrough comes back instead of staying black.
+    private func resumeARSessionAfterInterruption() {
+        guard isARSessionInterrupted else { return }
+        isARSessionInterrupted = false
+        guard isSessionRunning else { return }
+        print("[RoomPlan] resuming capture session after interruption")
+        roomCaptureView?.captureSession.run(configuration: roomCaptureSessionConfig)
+        roomCaptureView?.alpha = 1
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) {
+        print("[RoomPlan] ARSession interrupted")
+        isARSessionInterrupted = true
+    }
+
+    func sessionInterruptionEnded(_ session: ARSession) {
+        print("[RoomPlan] ARSession interruption ended")
+        DispatchQueue.main.async { [weak self] in
+            self?.resumeARSessionAfterInterruption()
+        }
+    }
+
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        // Surface AR-level failures, which otherwise leave the user on a silent black
+        // screen: the existing error card is only reachable from didEndWith.
+        let message = error.localizedDescription
+        print("[RoomPlan] ARSession failed: \(message)")
+        emitScanError(message: message, context: "arSession", code: "arSessionFailed")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let priorCount = self.capturedRoomArray.count
+            // Also clears isSessionRunning and exportPendingAfterBuild.
+            self.prepareScanningUIForCaptureFailure()
+            self.showErrorCard(
+                title: "Camera stopped",
+                message: priorCount > 0
+                    ? self.recoveryHelperMessage(priorRoomCount: priorCount)
+                    : "The camera stopped unexpectedly. Try scanning this room again.",
+                primaryAction: priorCount > 0 ? .recover : .tryAgain
+            )
+        }
     }
 
     // MARK: - AV Camera Preview (warm-up)
