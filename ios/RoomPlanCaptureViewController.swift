@@ -99,6 +99,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     /// True until the user taps start — drives finish-button start vs stop behavior.
     private var isReadyToStart: Bool = true
 
+    /// RoomCaptureView is pinned with Auto Layout (full available area). Never frame-mutate mid-scan.
+    private var phoneRoomCaptureConstraints: [NSLayoutConstraint] = []
+    private var tabletRoomCaptureConstraints: [NSLayoutConstraint] = []
+    /// Last bounds used for AV warm-up layout — skip no-op updates.
+    private var lastAVPreviewLayoutBounds: CGRect = .null
+    /// Track phone↔tablet so we only re-apply control layout on size-class change.
+    private var lastAppliedTabletLayout: Bool?
+
     /// Set while ARKit has suspended camera capture (backgrounding, screen lock,
     /// incoming call). ARKit does not resume capture on its own — the session must be
     /// re-run — so we track the suspension and recover on interruption end / becoming
@@ -127,62 +135,39 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         min(view.bounds.width, view.bounds.height) >= tabletMinDimension
     }
 
-    /// Phone: top safe area only (match quick camera `SafeAreaView edges={['top']}`).
-    /// iPad: all safe-area edges; main column left of the 120pt trailing rail.
-    private var availablePreviewRect: CGRect {
+    /// Same rect as RoomCaptureView so warm-up → scan doesn’t jump aspect ratio.
+    /// Phone: full host view (edge to edge). iPad: safe-area main column left of the rail.
+    private var roomCaptureMatchingFrame: CGRect {
         let bounds = view.bounds
-        let insets = view.safeAreaInsets
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
 
         if !isTabletLayout {
-            return CGRect(
-                x: 0,
-                y: insets.top,
-                width: bounds.width,
-                height: max(0, bounds.height - insets.top)
-            )
+            return bounds
         }
 
+        let insets = view.safeAreaInsets
         let width = max(0, bounds.width - insets.left - insets.right - railWidth)
         let height = max(0, bounds.height - insets.top - insets.bottom)
         return CGRect(x: insets.left, y: insets.top, width: width, height: height)
     }
 
-    /// Fit a 4:3 rectangle inside `available`.
-    /// Portrait uses 3:4 (width:height); landscape uses 4:3.
-    /// Phone: top-aligned. iPad: centered in the main column (does not overlap the rail).
-    private func previewFrame(in available: CGRect) -> CGRect {
-        guard available.width > 0, available.height > 0 else { return .zero }
-
-        let isLandscape = available.width > available.height
-        let targetAspect = isLandscape ? (4.0 / 3.0) : (3.0 / 4.0) // width / height
-        let availableAspect = available.width / available.height
-
-        let size: CGSize
-        if availableAspect > targetAspect {
-            // Available is wider than target — height-constrained
-            let height = available.height
-            size = CGSize(width: height * targetAspect, height: height)
-        } else {
-            // Available is taller/narrower than target — width-constrained
-            let width = available.width
-            size = CGSize(width: width, height: width / targetAspect)
-        }
-
-        let x = available.minX + (available.width - size.width) / 2
-        let y: CGFloat
-        if isTabletLayout {
-            y = available.minY + (available.height - size.height) / 2
-        } else {
-            y = available.minY
-        }
-        return CGRect(origin: CGPoint(x: x, y: y), size: size)
+    /// Update AV warm-up layer to match RoomCaptureView’s area when host bounds change.
+    /// Does not touch RoomCaptureView — that view is Auto Layout pinned for the life of the VC.
+    private func layoutAVPreviewIfNeeded(force: Bool = false) {
+        guard avPreviewLayer != nil else { return }
+        let bounds = view.bounds
+        if !force, bounds == lastAVPreviewLayoutBounds { return }
+        lastAVPreviewLayoutBounds = bounds
+        avPreviewLayer?.frame = roomCaptureMatchingFrame
+        applyAVPreviewRotation()
     }
 
-    private func layoutCameraSurfaces() {
-        let frame = previewFrame(in: availablePreviewRect)
-        roomCaptureView.frame = frame
-        avPreviewLayer?.frame = frame
-        applyAVPreviewRotation()
+    private func updateRailBorderFrame() {
+        guard isTabletLayout,
+              let border = sideRailView.layer.sublayers?.first(where: { $0.name == "railBorder" })
+        else { return }
+        let scale = view.window?.screen.scale ?? UIScreen.main.scale
+        border.frame = CGRect(x: 0, y: 0, width: 1.0 / scale, height: sideRailView.bounds.height)
     }
 
     /// Allow iPad landscape so RoomPlan / AV preview can follow the interface.
@@ -202,20 +187,21 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         super.viewWillTransition(to: size, with: coordinator)
         coordinator.animate(alongsideTransition: { _ in
             self.applyControlLayout()
-            self.layoutCameraSurfaces()
+            self.layoutAVPreviewIfNeeded(force: true)
         })
     }
 
     private func setupRoomCaptureView() {
-        // Temporary frame — sized to 4:3 in viewDidLayoutSubviews.
-        roomCaptureView = RoomCaptureView(frame: view.bounds)
-        roomCaptureView?.captureSession.delegate = self
+        // Full-area RoomCaptureView (Apple sample pattern). Warm-up uses the same rect.
+        roomCaptureView = RoomCaptureView(frame: .zero)
+        roomCaptureView.translatesAutoresizingMaskIntoConstraints = false
+        roomCaptureView.captureSession.delegate = self
         // Observe the underlying ARSession so interruptions (screen lock, call,
         // backgrounding) and hard AR failures are visible to us. RoomCaptureSession
         // forwards nothing about either.
-        roomCaptureView?.captureSession.arSession.delegate = self
+        roomCaptureView.captureSession.arSession.delegate = self
         // Hide until scanning starts so the AV warm-up preview shows through underneath
-        roomCaptureView?.alpha = 0
+        roomCaptureView.alpha = 0
         view.insertSubview(roomCaptureView, at: 0)
 
         setupButtons()
@@ -226,8 +212,20 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 
-        applyControlLayout()
-        layoutCameraSurfaces()
+        // Size-class change (e.g. iPad Split View) — not every layout pass.
+        let tablet = isTabletLayout
+        if lastAppliedTabletLayout != tablet {
+            applyControlLayout()
+        } else {
+            // Safe-area can settle after first layout; keep shutter inset correct without constraint churn.
+            if !tablet {
+                phoneFinishBottomConstraint.constant =
+                    -(max(view.safeAreaInsets.bottom, 12) + 8 + phoneShutterBelowChrome)
+            }
+            updateRailBorderFrame()
+        }
+
+        layoutAVPreviewIfNeeded()
     }
 
     /// Shutter dims matching `CameraShutterButton` video mode (phone / tablet).
@@ -250,12 +248,15 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
             self.finishButtonInnerHeightConstraint.constant = dims.size
             self.finishButtonInnerView.layer.cornerRadius = dims.cornerRadius
             self.finishButtonInnerView.backgroundColor = self.shutterRed
-            self.finishButton.layoutIfNeeded()
         }
 
         if animated {
-            UIView.animate(withDuration: 0.2, animations: updates)
+            UIView.animate(withDuration: 0.2) {
+                updates()
+                self.finishButton.layoutIfNeeded()
+            }
         } else {
+            // Avoid layoutIfNeeded here — applyControlLayout may run from viewDidLayoutSubviews.
             updates()
         }
     }
@@ -432,6 +433,20 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     private func setupConstraints() {
+        // Phone: full host view (Apple sample). Tablet: main column left of the rail.
+        phoneRoomCaptureConstraints = [
+            roomCaptureView.topAnchor.constraint(equalTo: view.topAnchor),
+            roomCaptureView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            roomCaptureView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            roomCaptureView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ]
+        tabletRoomCaptureConstraints = [
+            roomCaptureView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            roomCaptureView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            roomCaptureView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            roomCaptureView.trailingAnchor.constraint(equalTo: sideRailView.leadingAnchor),
+        ]
+
         backdropTopToFinishConstraint = backdropView.topAnchor.constraint(
             equalTo: finishButton.topAnchor, constant: -20
         )
@@ -544,8 +559,10 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
     }
 
     /// Swap phone bottom chrome vs iPad right rail; hide bottom bar on iPad while scanning.
+    /// Call on setup, scan/post-scan/error transitions, and rotation / size-class change — not every layout pass.
     private func applyControlLayout() {
         let tablet = isTabletLayout
+        lastAppliedTabletLayout = tablet
         let isPostScan = postScanCardView != nil
         let isErrorCard = errorCardView != nil
         let showBottomChrome = isPostScan || isErrorCard
@@ -554,12 +571,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         sideRailView.isUserInteractionEnabled = tablet
         sideRailWidthConstraint.constant = tablet ? railWidth : 0
 
-        // Hairline on the rail's leading edge
-        if tablet, let border = sideRailView.layer.sublayers?.first(where: { $0.name == "railBorder" }) {
-            let scale = view.window?.screen.scale ?? UIScreen.main.scale
-            border.frame = CGRect(x: 0, y: 0, width: 1.0 / scale, height: sideRailView.bounds.height)
-        }
-
+        NSLayoutConstraint.deactivate(phoneRoomCaptureConstraints)
+        NSLayoutConstraint.deactivate(tabletRoomCaptureConstraints)
         NSLayoutConstraint.deactivate(phoneFinishConstraints)
         NSLayoutConstraint.deactivate(tabletFinishConstraints)
         NSLayoutConstraint.deactivate(phoneCancelConstraints)
@@ -569,6 +582,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         NSLayoutConstraint.deactivate(tabletReadyStatusConstraints)
 
         if tablet {
+            NSLayoutConstraint.activate(tabletRoomCaptureConstraints)
             NSLayoutConstraint.activate(tabletFinishConstraints)
             finishButtonWidthConstraint.constant = tabletFinishButtonSize
             finishButtonHeightConstraint.constant = tabletFinishButtonSize
@@ -581,6 +595,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 backdropTopToFinishConstraint.isActive = false
             }
         } else {
+            NSLayoutConstraint.activate(phoneRoomCaptureConstraints)
             NSLayoutConstraint.activate(phoneFinishConstraints)
             finishButtonWidthConstraint.constant = phoneFinishButtonSize
             finishButtonHeightConstraint.constant = phoneFinishButtonSize
@@ -595,6 +610,8 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
                 backdropTopToFinishConstraint.isActive = true
             }
         }
+
+        updateRailBorderFrame()
 
         // Ready: beside shutter. Post-scan / error: top-left (clear of the sheet).
         if showBottomChrome {
@@ -1391,13 +1408,14 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.frame = previewFrame(in: availablePreviewRect)
         // Insert behind everything — RoomCaptureView is at index 0, so go below it
         view.layer.insertSublayer(previewLayer, at: 0)
 
         avSession = session
         avPreviewLayer = previewLayer
         avCaptureDevice = device
+        lastAVPreviewLayoutBounds = .null
+        layoutAVPreviewIfNeeded(force: true)
 
         // Keep the warm-up preview level with gravity across portrait/landscape (iPad).
         let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
@@ -1414,6 +1432,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         DispatchQueue.global(qos: .userInitiated).async {
             session.startRunning()
             DispatchQueue.main.async {
+                self.layoutAVPreviewIfNeeded(force: true)
                 self.applyAVPreviewRotation()
             }
         }
@@ -1452,6 +1471,7 @@ class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
         avCaptureDevice = nil
         avPreviewLayer?.removeFromSuperlayer()
         avPreviewLayer = nil
+        lastAVPreviewLayoutBounds = .null
         let session = avSession
         avSession = nil
         DispatchQueue.global(qos: .userInitiated).async {
