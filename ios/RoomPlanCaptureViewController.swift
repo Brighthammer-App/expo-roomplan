@@ -9,7 +9,7 @@ import AVFoundation
 
 @available(iOS 17.0, *)
 class RoomPlanCaptureViewController: UIViewController, RoomCaptureViewDelegate,
-    RoomCaptureSessionDelegate, ARSessionObserver
+    RoomCaptureSessionDelegate, ARSessionDelegate
 {
     private var roomCaptureView: RoomCaptureView!
     private var roomCaptureSessionConfig: RoomCaptureSession.Configuration =
